@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';import {execFileSync} from 'node:child_process';import {setTimeout as delay} from 'node:timers/promises';import {writeFile} from 'node:fs/promises';import {Pool} from 'pg';import {S3Client,CreateBucketCommand,PutObjectCommand,GetObjectCommand,DeleteObjectCommand,DeleteBucketCommand} from '@aws-sdk/client-s3';
+const compose=['compose','-p','runoza-stage0','-f','spikes/stage0/compose.yaml'];const options={connectionString:'postgres://runoza:stage0-local-test@127.0.0.1:55439/runoza_stage0'};
+const s3=new S3Client({endpoint:'http://127.0.0.1:59009',region:'us-east-1',forcePathStyle:true,credentials:{accessKeyId:'runoza-stage0',secretAccessKey:'stage0-local-test-secret'}});
+const Bucket='persistence-'+Date.now();let pool=new Pool(options);
+await pool.query('CREATE TABLE stage0_persistence (id int primary key, value text)');await pool.query("INSERT INTO stage0_persistence VALUES (1,'persisted')");await pool.end();
+await s3.send(new CreateBucketCommand({Bucket}));await s3.send(new PutObjectCommand({Bucket,Key:'marker',Body:'persisted'}));
+execFileSync('docker',[...compose,'up','-d','--force-recreate','postgres','rustfs'],{stdio:'pipe'});
+pool=new Pool(options);pool.on('error',()=>{});let ready=false;
+try{for(let n=0;n<60;n++){try{assert.equal((await pool.query('SELECT value FROM stage0_persistence WHERE id=1')).rows[0].value,'persisted');assert.equal(await (await s3.send(new GetObjectCommand({Bucket,Key:'marker'}))).Body!.transformToString(),'persisted');ready=true;break}catch{await delay(500)}}assert.ok(ready);await writeFile('docs/research/stage0-persistence.json',JSON.stringify({containerRecreation:true,postgres:'PASS',rustfs:'PASS',scope:'named volumes survive container recreation; not backup/restore'},null,2)+'\n');console.log('Container recreation persistence: PASS')}
+finally{await pool.query('DROP TABLE IF EXISTS stage0_persistence');await pool.end();await s3.send(new DeleteObjectCommand({Bucket,Key:'marker'}));await s3.send(new DeleteBucketCommand({Bucket}));s3.destroy()}

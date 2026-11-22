@@ -1,0 +1,66 @@
+name: CI
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18-trixie@sha256:e923a22ac074261dd73970c57edf659475bf0497cb9456f17d98ed7cdd3ca913
+        env:
+          POSTGRES_USER: runoza
+          POSTGRES_PASSWORD: ci-disposable-only
+          POSTGRES_DB: runoza
+        ports: ["55449:5432"]
+        options: --health-cmd="pg_isready -U runoza -d runoza" --health-interval=5s --health-timeout=3s --health-retries=20
+      rustfs:
+        image: rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+        env:
+          RUSTFS_ACCESS_KEY: ci-runoza
+          RUSTFS_SECRET_KEY: ci-disposable-storage-only
+          RUSTFS_CONSOLE_ENABLE: "false"
+        ports: ["59019:9000"]
+        options: --health-cmd="curl -fsS http://127.0.0.1:9000/health" --health-interval=5s --health-timeout=3s --health-retries=30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.22.1
+          cache: npm
+      - run: npm install --global npm@11.6.2
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgres://runoza:ci-disposable-only@127.0.0.1:55449/runoza
+          TEST_S3_ENDPOINT: http://127.0.0.1:59019
+          S3_ACCESS_KEY: ci-runoza
+          S3_SECRET_KEY: ci-disposable-storage-only
+      - run: |
+          mkdir -p work/reports
+          npm sbom --sbom-format cyclonedx > work/reports/sbom.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-sbom
+          path: work/reports/sbom.json
+          if-no-files-found: error
+          retention-days: 14
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.22.1
+      - run: node scripts/init-env.mjs
+      - run: docker compose --env-file .env -f deploy/compose/compose.yaml up --build -d --wait --wait-timeout 180
+      - run: node scripts/compose-smoke.mjs
+      - if: always()
+        run: docker compose --env-file .env -f deploy/compose/compose.yaml down -v

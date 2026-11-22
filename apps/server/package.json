@@ -1,0 +1,23 @@
+{
+  "name": "@runoza/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "fastify": "5.12.8",
+    "@runoza/contracts": "0.0.0",
+    "@runoza/config": "0.0.0",
+    "@runoza/db": "0.0.0",
+    "@runoza/storage": "0.0.0",
+    "@runoza/auth": "0.0.0",
+    "@fastify/cookie": "11.1.5",
+    "@fastify/static": "10.1.10",
+    "@runoza/chat": "0.0.0",
+    "@runoza/providers": "0.0.0",
+    "@runoza/resources": "0.0.0",
+    "@runoza/execution": "0.0.0",
+    "@runoza/telemetry": "0.0.0",
+    "@runoza/permissions": "0.0.0"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "work/build",
+    "rewriteRelativeImportExtensions": true,
+    "sourceMap": true
+  },
+  "include": [
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.tsx"
+  ],
+  "exclude": [
+    "**/dist/**",
+    "node_modules",
+    "apps/web/**"
+  ]
+}

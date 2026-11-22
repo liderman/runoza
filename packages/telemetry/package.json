@@ -1,0 +1,20 @@
+{
+  "name": "@runoza/telemetry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.0",
+    "@opentelemetry/sdk-trace-node": "2.12.1",
+    "@opentelemetry/sdk-trace-base": "2.12.1",
+    "@opentelemetry/resources": "2.12.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.223.2"
+  }
+}

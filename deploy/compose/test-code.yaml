@@ -1,0 +1,16 @@
+# Test-only transport into internal networks. Never include in a deployment.
+services:
+  code-test-proxy:
+    image: runoza:local
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    command: [node, /proxy.mjs]
+    volumes: ["./test-code-proxy.mjs:/proxy.mjs:ro"]
+    ports: ["127.0.0.1:58039:8001", "127.0.0.1:58049:8002"]
+    networks:
+      default:
+        aliases: [code-test-proxy]
+      code-a: {}
+      code-b: {}

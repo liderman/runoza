@@ -1,0 +1,20 @@
+# Optional, local-only trace viewer. Compose with compose.yaml and --profile diagnostics.
+services:
+  jaeger:
+    profiles: [diagnostics]
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.23.0@sha256:3823829974ccfc2485d2e48b165579091f32295022ae80ca49704e2f4834116e
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1
+    ports: ["127.0.0.1:${JAEGER_UI_PORT:-16686}:16686"]
+    restart: unless-stopped
+  api:
+    environment:
+      RUNOZA_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+  worker:
+    environment:
+      RUNOZA_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces

@@ -1,0 +1,16 @@
+{
+  "name": "@runoza/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@runoza/contracts": "0.0.0"
+  }
+}

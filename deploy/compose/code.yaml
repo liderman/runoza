@@ -1,0 +1,87 @@
+# Optional server-code pool. Each sandbox has its own internal network.
+x-terminal: &terminal
+  image: ${TERMINAL_IMAGE:-ghcr.io/open-webui/open-terminal:slim@sha256:398e24c6ef1617c105feafc11766d10907a98b88d37362a58f7238c095e422a4}
+  entrypoint: [/usr/bin/tini, --, /bin/sh, -c]
+  command:
+    - '/usr/local/bin/python -m venv --system-site-packages /tmp/workspace/.venv && export PATH="/tmp/workspace/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" && exec open-terminal run'
+  user: "1000:1000"
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,size=128m,uid=1000,gid=1000
+    - /tmp/workspace:rw,nosuid,size=128m,uid=1000,gid=1000
+    - /home/user:rw,nosuid,size=64m,uid=1000,gid=1000
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  mem_limit: 512m
+  cpus: 1
+  pids_limit: 128
+  restart: "no"
+  healthcheck:
+    test:
+      [
+        CMD,
+        python,
+        -c,
+        "import socket; s=socket.create_connection(('127.0.0.1',8000),3); s.close()",
+      ]
+    interval: 3s
+    timeout: 5s
+    retries: 30
+services:
+  code-egress:
+    image: ${RUNOZA_IMAGE:-runoza:local}
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 64
+    command: [node, /egress-proxy.mjs]
+    volumes: ["./egress-proxy.mjs:/egress-proxy.mjs:ro"]
+    networks: [code-a, code-b, code-egress]
+    restart: unless-stopped
+  worker:
+    # Explicit endpoint config keeps the application network attached with
+    # older Compose versions when the other networks are internal.
+    networks:
+      default:
+        aliases: [worker]
+      code-a: {}
+      code-b: {}
+    environment:
+      EXECUTOR_SECRETS_KEY: ${EXECUTOR_SECRETS_KEY:?Set EXECUTOR_SECRETS_KEY in .env.code}
+      TERMINAL_POOL: '[{"id":"terminal-a","url":"http://terminal-a:8000","token":"${TERMINAL_A_TOKEN:?Run scripts/code-pool.mjs}","generation":"${TERMINAL_A_GENERATION:?Run scripts/code-pool.mjs}"},{"id":"terminal-b","url":"http://terminal-b:8000","token":"${TERMINAL_B_TOKEN:?Run scripts/code-pool.mjs}","generation":"${TERMINAL_B_GENERATION:?Run scripts/code-pool.mjs}"}]'
+  terminal-a:
+    depends_on: [code-egress]
+    <<: *terminal
+    environment:
+      OPEN_TERMINAL_API_KEY: ${TERMINAL_A_TOKEN:?Run scripts/code-pool.mjs}
+      HTTP_PROXY: http://code-egress:8080
+      HTTPS_PROXY: http://code-egress:8080
+      http_proxy: http://code-egress:8080
+      https_proxy: http://code-egress:8080
+      NO_PROXY: localhost,127.0.0.1
+      TMPDIR: /tmp/workspace
+      PIP_TARGET: /tmp/workspace/.packages
+      PYTHONPATH: /tmp/workspace/.packages
+      PIP_NO_CACHE_DIR: "1"
+    networks: [code-a]
+  terminal-b:
+    depends_on: [code-egress]
+    <<: *terminal
+    environment:
+      OPEN_TERMINAL_API_KEY: ${TERMINAL_B_TOKEN:?Run scripts/code-pool.mjs}
+      HTTP_PROXY: http://code-egress:8080
+      HTTPS_PROXY: http://code-egress:8080
+      http_proxy: http://code-egress:8080
+      https_proxy: http://code-egress:8080
+      NO_PROXY: localhost,127.0.0.1
+      TMPDIR: /tmp/workspace
+      PIP_TARGET: /tmp/workspace/.packages
+      PYTHONPATH: /tmp/workspace/.packages
+      PIP_NO_CACHE_DIR: "1"
+    networks: [code-b]
+networks:
+  code-egress: {}
+  code-a: { internal: true }
+  code-b: { internal: true }

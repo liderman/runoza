@@ -1,0 +1,83 @@
+{
+  "checkedAt": "2026-11-15",
+  "scope": "full lockfile including development dependencies",
+  "vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 6,
+    "high": 6,
+    "critical": 0,
+    "total": 12
+  },
+  "productionVulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 3,
+    "high": 6,
+    "critical": 0,
+    "total": 9
+  },
+  "status": "upstream findings remain open; no dependency source patches or overrides",
+  "affected": [
+    {
+      "package": "@diplodoc/file-extension",
+      "severity": "moderate",
+      "fixAvailable": false
+    },
+    {
+      "package": "@diplodoc/transform",
+      "severity": "high",
+      "fixAvailable": false
+    },
+    {
+      "package": "@electron/asar",
+      "severity": "moderate",
+      "fixAvailable": true
+    },
+    {
+      "package": "@gravity-ui/aikit",
+      "severity": "moderate",
+      "fixAvailable": false
+    },
+    {
+      "package": "css",
+      "severity": "high",
+      "fixAvailable": false
+    },
+    {
+      "package": "decode-uri-component",
+      "severity": "high",
+      "fixAvailable": false
+    },
+    {
+      "package": "glob",
+      "severity": "moderate",
+      "fixAvailable": true
+    },
+    {
+      "package": "linkify-it",
+      "severity": "high",
+      "fixAvailable": false
+    },
+    {
+      "package": "markdown-it",
+      "severity": "high",
+      "fixAvailable": false
+    },
+    {
+      "package": "markdownlint",
+      "severity": "moderate",
+      "fixAvailable": false
+    },
+    {
+      "package": "minimatch",
+      "severity": "moderate",
+      "fixAvailable": true
+    },
+    {
+      "package": "source-map-resolve",
+      "severity": "high",
+      "fixAvailable": false
+    }
+  ]
+}

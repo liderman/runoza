@@ -1,0 +1,32 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "spikes/**/*.ts",
+    "spikes/**/*.tsx",
+    "apps/**/*.ts",
+    "packages/**/*.ts",
+    "tests/**/*.ts",
+    "apps/**/*.tsx",
+    "packages/**/*.tsx",
+    "tests/**/*.tsx"
+  ],
+  "exclude": [
+    "**/dist/**",
+    "node_modules"
+  ]
+}

@@ -1,0 +1,6 @@
+# Only for the local integration suite. Never use this override in a deployment.
+services:
+  postgres:
+    ports: ["127.0.0.1:55449:5432"]
+  rustfs:
+    ports: ["127.0.0.1:59019:9000"]

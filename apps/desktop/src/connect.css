@@ -1,0 +1,31 @@
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  background: var(--g-color-base-background);
+  color: var(--g-color-text-primary);
+}
+.desktop-connect {
+  max-width: 640px;
+  margin: 12vh auto;
+  padding: 24px;
+}
+
+.desktop-titlebar {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: drag;
+  user-select: none;
+  color: var(--g-color-text-secondary);
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--g-spacing-3);
+  font-size: var(--g-text-header-1-font-size);
+  font-weight: 600;
+}

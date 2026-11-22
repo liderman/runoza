@@ -1,0 +1,19 @@
+{
+  "name": "@runoza/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@runoza/config": "0.0.0",
+    "@runoza/db": "0.0.0",
+    "@runoza/jobs": "0.0.0",
+    "@runoza/chat": "0.0.0",
+    "@runoza/resources": "0.0.0",
+    "@runoza/storage": "0.0.0",
+    "@runoza/agent": "0.0.0",
+    "@runoza/execution": "0.0.0",
+    "@runoza/auth": "0.0.0",
+    "@runoza/telemetry": "0.0.0"
+  }
+}

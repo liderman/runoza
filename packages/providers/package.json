@@ -1,0 +1,17 @@
+{
+  "name": "@runoza/providers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.5.2",
+    "@runoza/telemetry": "0.0.0"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@runoza/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@runoza/db": "0.0.0",
+    "@runoza/auth": "0.0.0",
+    "@runoza/resources": "0.0.0",
+    "@runoza/storage": "0.0.0",
+    "@runoza/execution": "0.0.0",
+    "@runoza/contracts": "0.0.0",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@runoza/providers": "0.0.0",
+    "@runoza/telemetry": "0.0.0",
+    "@runoza/permissions": "0.0.0"
+  }
+}

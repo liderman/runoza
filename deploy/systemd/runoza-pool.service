@@ -1,0 +1,13 @@
+# Copy to the user systemd directory and replace paths before enabling.
+# The operator account must already be authorized to use Docker.
+[Unit]
+Description=Runoza local execution pool operator
+After=network-online.target
+[Service]
+Type=simple
+WorkingDirectory=/opt/runoza
+ExecStart=/usr/bin/node /opt/runoza/scripts/code-pool-watch.mjs
+Restart=always
+RestartSec=15
+[Install]
+WantedBy=default.target

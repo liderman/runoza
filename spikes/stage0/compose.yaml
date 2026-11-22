@@ -1,0 +1,52 @@
+# Test-only credentials. Never use this Compose file for production.
+services:
+  postgres:
+    image: postgres@sha256:e3d24f6906d0760bf4da0dae872415391ededefad23fd471c47dc53b0ddf3c42
+    environment:
+      POSTGRES_USER: runoza
+      POSTGRES_PASSWORD: stage0-local-test
+      POSTGRES_DB: runoza_stage0
+    volumes: ['stage0-pg:/var/lib/postgresql']
+    ports: ['127.0.0.1:55439:5432']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U runoza -d runoza_stage0']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  rustfs:
+    image: rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    environment:
+      RUSTFS_ACCESS_KEY: runoza-stage0
+      RUSTFS_SECRET_KEY: stage0-local-test-secret
+      RUSTFS_CONSOLE_ENABLE: 'false'
+    volumes: ['stage0-s3:/data']
+    ports: ['127.0.0.1:59009:9000']
+  terminal-a:
+    image: runoza/open-terminal:stage0-47fbd8f
+    profiles: [terminal]
+    environment:
+      OPEN_TERMINAL_API_KEY: stage0-terminal-only
+    ports: ['127.0.0.1:58019:8000']
+    mem_limit: 512m
+    pids_limit: 128
+  terminal-b:
+    image: runoza/open-terminal:stage0-47fbd8f
+    profiles: [terminal]
+    environment:
+      OPEN_TERMINAL_API_KEY: stage0-terminal-only
+    ports: ['127.0.0.1:58029:8000']
+    mem_limit: 512m
+    pids_limit: 128
+  litellm:
+    image: runoza/litellm:stage0-1.108.5
+    profiles: [gateway]
+    env_file: ../../.env.stage0
+    environment:
+      LITELLM_MASTER_KEY: stage0-gateway-only
+      LITELLM_TELEMETRY: 'False'
+      HOME: /tmp
+    volumes: ['./litellm/config.yaml:/config/config.yaml:ro']
+    ports: ['127.0.0.1:54009:4000']
+volumes:
+  stage0-pg:
+  stage0-s3:

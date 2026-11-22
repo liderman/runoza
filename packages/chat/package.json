@@ -1,0 +1,25 @@
+{
+  "name": "@runoza/chat",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@runoza/db": "0.0.0",
+    "@runoza/auth": "0.0.0",
+    "@runoza/providers": "0.0.0",
+    "@runoza/jobs": "0.0.0",
+    "@runoza/contracts": "0.0.0",
+    "@runoza/resources": "0.0.0",
+    "@runoza/agent": "0.0.0",
+    "@runoza/execution": "0.0.0",
+    "@runoza/telemetry": "0.0.0",
+    "@runoza/permissions": "0.0.0"
+  }
+}

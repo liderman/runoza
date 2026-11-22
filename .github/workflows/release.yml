@@ -1,0 +1,169 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      prerelease: ${{ steps.validate.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: validate
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "Use vMAJOR.MINOR.PATCH or append -alpha.N, -beta.N, or -rc.N." >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  desktop:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-2025, platform: win, arch: x64 }
+          - { runner: windows-11-arm, platform: win, arch: arm64 }
+          - { runner: macos-15-intel, platform: mac, arch: x64 }
+          - { runner: macos-15, platform: mac, arch: arm64 }
+          - { runner: ubuntu-22.04, platform: linux, arch: x64 }
+          - { runner: ubuntu-22.04-arm, platform: linux, arch: arm64 }
+    env:
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+      RUNOZA_DESKTOP_VERSION: ${{ needs.version.outputs.version }}
+      RUNOZA_DESKTOP_OUT: work/desktop-ci
+      RUNOZA_DESKTOP_SMOKE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          architecture: ${{ matrix.arch }}
+          cache: npm
+      - run: node -e "if (process.arch !== process.env.ARCH) throw Error(process.arch)"
+      - run: npm install --global npm@11.6.2 --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts
+      - name: Rebuild node-pty for the locked Electron ABI
+        shell: bash
+        run: |
+          electron_version=$(node -p "require('electron/package.json').version")
+          npm exec -- electron-rebuild -f -w node-pty -v "$electron_version"
+          node node_modules/node-pty/scripts/post-install.js
+      - run: npm run package:desktop
+      - name: Archive portable application
+        shell: bash
+        run: |
+          app=(work/desktop-ci/*/)
+          test "${#app[@]}" -eq 1
+          mkdir -p work/desktop-assets
+          asset="$PWD/work/desktop-assets/Runoza-$GITHUB_REF_NAME-$PLATFORM-$ARCH"
+          case "$PLATFORM" in
+            mac) ditto -c -k --sequesterRsrc --keepParent "${app[0]}Runóza.app" "$asset.zip" ;;
+            win) tar.exe -a -cf "$asset.zip" -C "${app[0]}" . ;;
+            linux) tar -czf "$asset.tar.gz" -C "${app[0]}" . ;;
+          esac
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
+          path: work/desktop-assets/*
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+  image:
+    needs: [ci, version, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      reference: ${{ steps.build.outputs.reference }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+      - id: build
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --driver docker-container --use
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --file deploy/compose/Dockerfile \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME#v}" \
+            --label "org.opencontainers.image.licenses=Apache-2.0" \
+            --provenance=mode=min --sbom=true --push --metadata-file /tmp/runoza-image.json \
+            --tag "$image:$GITHUB_REF_NAME" .
+          digest=$(jq -er '."containerimage.digest" | select(startswith("sha256:"))' /tmp/runoza-image.json)
+          echo "reference=$image@$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "$image@$digest" --raw |
+            jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]'
+
+  publish:
+    needs: [version, desktop, image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE_REFERENCE: ${{ needs.image.outputs.reference }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: desktop-*
+          path: release-assets
+          merge-multiple: true
+      - shell: bash
+        run: |
+          cd release-assets
+          assets=(Runoza-*)
+          test "${#assets[@]}" -eq 6
+          sha256sum "${assets[@]}" > SHA256SUMS.txt
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          notes="$RUNNER_TEMP/runoza-release.md"
+          {
+            printf 'Docker image: `%s`\n\n' "$IMAGE_REFERENCE"
+            printf 'Portable desktop bundles for Windows, macOS, and Linux (x64 and ARM64). Check SHA256SUMS.txt before extracting.\n\n'
+            printf 'Desktop builds lack production signing, macOS notarization, and automatic updates. Use the web app if your operating system blocks the bundle.\n\n'
+            printf '[Setup instructions](%s/%s/blob/%s/README.md)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+          } > "$notes"
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --draft "${flags[@]}" --title "Runóza ${GITHUB_REF_NAME#v}" --notes-file "$notes"
+          fi
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}" SHA256SUMS.txt
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --notes-file "$notes"

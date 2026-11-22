@@ -1,0 +1,444 @@
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--g-color-base-background);
+  color: var(--g-color-text-primary);
+}
+* {
+  box-sizing: border-box;
+}
+.entry,
+.workspace {
+  margin: auto;
+  padding: var(--g-spacing-8) var(--g-spacing-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--g-spacing-5);
+}
+.entry {
+  max-width: 40rem;
+  padding-top: 10vh;
+}
+.workspace {
+  max-width: 76rem;
+}
+.masthead {
+  margin-bottom: var(--g-spacing-4);
+}
+.subtitle {
+  margin-top: var(--g-spacing-2);
+  overflow-wrap: anywhere;
+}
+.panel {
+  padding: var(--g-spacing-5);
+  min-width: 0;
+}
+.panel > .stack {
+  margin-top: var(--g-spacing-4);
+}
+.stack,
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--g-spacing-3);
+  min-width: 0;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: var(--g-spacing-4);
+}
+.user-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--g-spacing-4);
+  padding: var(--g-spacing-3) 0;
+  border-bottom: 1px solid var(--g-color-line-generic);
+}
+.user-row > div:first-child {
+  flex: 1;
+  min-width: 12rem;
+  overflow-wrap: anywhere;
+}
+.field label {
+  display: block;
+}
+.g-root {
+  min-height: 100vh;
+}
+
+.conversation-main {
+  height: 100dvh;
+  overflow: hidden;
+}
+.chat-workspace {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.conversation-history {
+  overflow: hidden;
+}
+.conversation-messages {
+  height: 100%;
+  box-sizing: border-box;
+  padding-block: var(--g-spacing-4);
+  max-width: 54rem;
+  margin-inline: auto;
+}
+.conversation-toolbar {
+  flex-shrink: 0;
+}
+.conversation-composer {
+  flex-shrink: 0;
+}
+.model-trigger {
+  max-width: min(24rem, 55vw);
+  min-width: 0;
+}
+.model-brand-logo {
+  flex: none;
+  object-fit: contain;
+  border-radius: var(--g-border-radius-s);
+  background: var(--g-color-text-light-primary);
+}
+.chat-workspace pre {
+  max-width: 100%;
+  overflow: auto;
+}
+.chat-workspace img {
+  max-width: 100%;
+}
+
+.resource-name {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.resource-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+/* Button has no alignment prop/CSS token. Style only our root, never UIKit internals. */
+.settings-trigger {
+  justify-content: flex-start;
+}
+/* Inherit the native button line-height; Typography.Text overrides it. */
+.model-trigger-label {
+  display: block;
+  max-width: min(20rem, 36vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.code-activity {
+  width: 100%;
+  max-width: 52rem;
+  margin-inline: auto;
+  min-width: 0;
+}
+.code-output {
+  margin: 0;
+  padding: var(--g-spacing-3);
+  border-radius: var(--g-border-radius-m);
+  background: var(--g-color-base-generic);
+  color: var(--g-color-text-primary);
+  font-family: var(--g-font-family-monospace);
+  font-size: var(--g-text-code-1-font-size);
+  line-height: var(--g-text-code-1-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  max-height: 20rem;
+}
+.code-output:focus-visible {
+  outline: 2px solid var(--g-color-line-focus);
+  outline-offset: 2px;
+}
+
+/* Geometry belongs to the workspace; Gravity owns controls, states and spacing. */
+.workspace-terminal {
+  height: min(48vh, 430px);
+  min-height: 200px;
+  padding: 12px;
+  border: 1px solid var(--g-color-line-generic);
+  border-radius: 8px;
+  background: var(--g-color-base-background);
+  overflow: hidden;
+}
+.workspace-terminal:focus-within {
+  outline: 2px solid var(--g-color-line-focus);
+  outline-offset: 2px;
+}
+.workspace-files {
+  max-height: 180px;
+  overflow: auto;
+  border-block: 1px solid var(--g-color-line-generic);
+  padding-block: 8px;
+}
+
+/* Conversation/workspace geometry; Gravity components own control styling. */
+.conversation-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  width: clamp(360px, 42vw, 620px);
+  flex-shrink: 0;
+  min-height: 0;
+  border-inline-start: 1px solid var(--g-color-line-generic);
+  background: var(--g-color-base-background);
+}
+.workspace-panel-header,
+.workspace-panel-footer {
+  flex-shrink: 0;
+}
+.workspace-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 16px 16px;
+}
+.workspace-panel .workspace-terminal {
+  height: clamp(220px, 45vh, 520px);
+}
+@media (max-width: 1050px) {
+  .workspace-panel {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(100%, 560px);
+    z-index: 5;
+    box-shadow: var(--g-color-sfx-shadow) -8px 0 24px;
+  }
+}
+
+/* Native macOS controls occupy the left side of the draggable title bar. */
+.desktop-titlebar {
+  height: 44px;
+  padding: 0 var(--g-spacing-3) 0 90px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--g-spacing-3);
+  background: var(--g-color-base-background);
+  color: var(--g-color-text-secondary);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+body:has(.desktop-titlebar) .conversation-main {
+  height: calc(100dvh - var(--gn-top-alert-height, 44px));
+}
+
+/* App-owned surfaces: no overrides of UIKit internals. */
+.model-catalog-row {
+  border-radius: var(--g-border-radius-m);
+  padding: 6px 8px;
+  transition: background-color 120ms ease;
+}
+.model-catalog-row:hover,
+.model-catalog-row:focus-within {
+  background: var(--g-color-base-simple-hover);
+}
+.reasoning-text {
+  margin: 0;
+  padding-block-start: var(--g-spacing-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--g-color-text-secondary);
+  max-height: 24rem;
+  overflow: auto;
+}
+.reasoning-power {
+  color: var(--g-color-text-warning);
+  animation: reasoning-power-pulse 2.4s ease-in-out 3;
+}
+@keyframes reasoning-power-pulse {
+  50% {
+    box-shadow: 0 0 0 3px var(--g-color-base-warning-light);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-power {
+    animation: none;
+  }
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--g-spacing-3);
+  color: var(--g-color-text-primary);
+  font-size: var(--g-text-header-1-font-size);
+  font-weight: 600;
+}
+.brand-logo img {
+  object-fit: contain;
+  flex-shrink: 0;
+}
+/* Native navigation items own their appearance; only truncate our chat labels. */
+.sidebar-chat {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desktop-titlebar-content {
+  flex: 1;
+  min-width: 0;
+}
+.desktop-titlebar-content:empty {
+  display: none;
+}
+.desktop-titlebar .conversation-toolbar {
+  width: 100%;
+  box-sizing: border-box;
+}
+.conversation-header-actions {
+  -webkit-app-region: no-drag;
+}
+/* Electron drag hit testing can win over portals. Suspend dragging while an overlay is open. */
+body:has([role="listbox"], [role="menu"], [role="dialog"]) .desktop-titlebar {
+  -webkit-app-region: no-drag;
+}
+.model-picker-content {
+  max-height: min(28rem, calc(100dvh - 120px));
+  min-height: 0;
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+.model-provider-filters {
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.reasoning-popover {
+  width: min(280px, calc(100vw - 32px));
+  box-sizing: border-box;
+}
+
+.chat-activity-dot {
+  display: inline-block;
+  width: var(--g-spacing-2);
+  height: var(--g-spacing-2);
+  border-radius: 50%;
+  background: var(--g-color-text-positive);
+  animation: chat-activity-pulse 1.8s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.chat-activity-dot--queued {
+  background: var(--g-color-text-secondary);
+  animation: none;
+}
+.chat-activity-dot--waiting_approval {
+  background: var(--g-color-text-warning);
+}
+@keyframes chat-activity-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-activity-dot {
+    animation: none;
+  }
+}
+
+.skill-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+  max-height: 50dvh;
+  overflow: auto;
+  font: inherit;
+}
+
+.navigation-history-controls {
+  -webkit-app-region: no-drag;
+  flex-shrink: 0;
+}
+
+/* App-owned catalog layout; Gravity controls keep their native dimensions. */
+.catalog-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--g-spacing-3);
+}
+.catalog-virtual-scroll {
+  max-height: min(456px, 60vh);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  border-radius: var(--g-border-radius-m);
+}
+.catalog-virtual-scroll:focus-visible {
+  outline: 2px solid var(--g-color-line-focus);
+  outline-offset: 2px;
+}
+.catalog-virtual-scroll .model-catalog-row {
+  min-height: 68px;
+  margin-bottom: var(--g-spacing-2);
+}
+
+.sidebar-group {
+  margin-inline: var(--g-spacing-2);
+  margin-block-start: var(--g-spacing-3);
+  gap: var(--g-spacing-1);
+}
+.sidebar-group-link {
+  justify-content: flex-start;
+  min-width: 0;
+}
+.sidebar-group-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-scroll-frame {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+}
+.conversation-scroll {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.conversation-jump {
+  position: absolute;
+  bottom: var(--g-spacing-3);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - var(--g-spacing-4));
+}
+/* Full generated palettes above; app surfaces keep the accent confined to controls. */
+
+.composer-attachments {
+  max-height: 10rem;
+  overflow-y: auto;
+}
+
+.workspace-panel--info {
+  width: min(25rem, 100%);
+}
+
+.project-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+}

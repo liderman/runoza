@@ -1,0 +1,10 @@
+model_list:
+  - model_name: runoza-test
+    litellm_params:
+      model: openrouter/openai/gpt-4.1-nano
+      api_key: os.environ/OPENROUTER_API_KEY
+      max_tokens: 256
+      timeout: 30
+litellm_settings:
+  drop_params: false
+  set_verbose: false

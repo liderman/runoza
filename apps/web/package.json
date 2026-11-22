@@ -1,0 +1,21 @@
+{
+  "name": "@runoza/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "@gravity-ui/uikit": "8.0.0",
+    "@runoza/app": "0.0.0",
+    "@runoza/api-client": "0.0.0",
+    "@runoza/platform": "0.0.0"
+  }
+}

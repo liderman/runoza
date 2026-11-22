@@ -1,0 +1,53 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Credentials and environment overrides
+.env
+.env.*
+!.env.example
+.envrc
+.npmrc
+.npmrc.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local runtime, backups and diagnostic output
+work/
+.runoza/
+.codex/
+.claude/
+*.log
+*.dump
+*.backup
+*.bak
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Historical development evidence is kept locally. The license baseline is
+# required by scripts/licenses.mjs.
+/docs/research/stage[0-9]*
+!/docs/research/stage0-licenses.json
+/docs/research/approval-recovery-report-*.md
+/docs/research/functional-audit-*.md
+/docs/research/functional-recovery-report-*.md
+/docs/research/provider-recovery-*.md
+/docs/research/notices/open-terminal-licenses.tar.gz
+/docs/design/visual-refresh-report.md
+/docs/security/*
+!/docs/security/README.md
+!/docs/security/upstream-npm.json
+
+# Local editors and OS metadata
+.idea/
+.vscode/
+.DS_Store
+._*

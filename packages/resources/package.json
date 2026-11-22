@@ -1,0 +1,22 @@
+{
+  "name": "@runoza/resources",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@runoza/auth": "0.0.0",
+    "@runoza/contracts": "0.0.0",
+    "@runoza/db": "0.0.0",
+    "@runoza/storage": "0.0.0",
+    "fflate": "0.8.3",
+    "smol-toml": "1.9.1",
+    "yaml": "2.9.1"
+  }
+}
