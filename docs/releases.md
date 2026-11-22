@@ -11,8 +11,8 @@ From a tested commit on `main`, push a version tag. Use a suffix such as `-alpha
 `-beta.1`, or `-rc.1` to mark a prerelease.
 
 ```sh
-git tag v0.1.0-alpha.1
-git push origin v0.1.0-alpha.1
+git tag v0.1.0-alpha.2
+git push origin v0.1.0-alpha.2
 ```
 
 The workflow reruns CI at the tagged commit and builds the Electron app on native Windows,
@@ -22,6 +22,7 @@ pass, the workflow pushes a multi-architecture server image with provenance and 
 [GitHub Container Registry](https://github.com/liderman/runoza/pkgs/container/runoza). It attaches
 the six archives and their SHA-256 checksums to a [GitHub release](https://github.com/liderman/runoza/releases).
 The notes contain the image digest for deployment. Deploy by version or digest.
+To trigger the workflow manually for an existing version tag, use `gh workflow run release.yml --ref <tag>`.
 
 GitHub creates a new GHCR package with private visibility. For public distribution, an owner
 sets the package visibility to **Public** once in package settings. Workflow publishing uses

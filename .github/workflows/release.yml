@@ -2,6 +2,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -75,7 +76,8 @@ jobs:
           npm exec -- electron-rebuild -f -w node-pty -v "$electron_version"
           node node_modules/node-pty/scripts/post-install.js
       - run: npm run package:desktop
-      - name: Archive portable application
+      - name: Archive macOS or Linux application
+        if: matrix.platform != 'win'
         shell: bash
         run: |
           app=(work/desktop-ci/*/)
@@ -84,9 +86,23 @@ jobs:
           asset="$PWD/work/desktop-assets/Runoza-$GITHUB_REF_NAME-$PLATFORM-$ARCH"
           case "$PLATFORM" in
             mac) ditto -c -k --sequesterRsrc --keepParent "${app[0]}Runóza.app" "$asset.zip" ;;
-            win) tar.exe -a -cf "$asset.zip" -C "${app[0]}" . ;;
             linux) tar -czf "$asset.tar.gz" -C "${app[0]}" . ;;
           esac
+      - name: Archive Windows application
+        if: matrix.platform == 'win'
+        shell: pwsh
+        run: |
+          $apps = @(Get-ChildItem work/desktop-ci -Directory)
+          if ($apps.Count -ne 1) { throw "Expected one packaged application" }
+          $output = New-Item -ItemType Directory -Path work/desktop-assets
+          $archive = Join-Path $output.FullName "Runoza-$env:GITHUB_REF_NAME-win-$env:ARCH.zip"
+          Compress-Archive -Path (Join-Path $apps[0].FullName '*') -DestinationPath $archive
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            if (-not $zip.GetEntry('Runóza.exe')) { throw "Missing Windows executable in ZIP" }
+          } finally {
+            $zip.Dispose()
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-${{ matrix.platform }}-${{ matrix.arch }}
