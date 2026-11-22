@@ -99,7 +99,7 @@ jobs:
           Compress-Archive -Path (Join-Path $apps[0].FullName '*') -DestinationPath $archive
           $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
           try {
-            if (-not $zip.GetEntry('Runóza.exe')) { throw "Missing Windows executable in ZIP" }
+            if (-not $zip.GetEntry('runoza.exe')) { throw "Missing Windows executable in ZIP" }
           } finally {
             $zip.Dispose()
           }

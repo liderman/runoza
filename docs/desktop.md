@@ -9,9 +9,9 @@ Each [GitHub release](https://github.com/liderman/runoza/releases) includes port
 
 | OS | Architectures | Format | Launch after extracting |
 | --- | --- | --- | --- |
-| Windows 10/11 | x64, ARM64 | ZIP | Open `Runóza.exe` |
+| Windows 10/11 | x64, ARM64 | ZIP | Open `runoza.exe` |
 | macOS | Intel x64, Apple Silicon ARM64 | ZIP | Move `Runóza.app` to Applications and open it |
-| Linux | x64, ARM64 | tar.gz | Run `./Runóza` on a desktop system with Electron's GTK and NSS dependencies |
+| Linux | x64, ARM64 | tar.gz | Run `./runoza` on a desktop system with Electron's GTK and NSS dependencies |
 
 Verify your download against `SHA256SUMS.txt`. Use `Get-FileHash <archive>` on Windows,
 `shasum -a 256 <archive>` on macOS, or `sha256sum <archive>` on Linux. Start the server

@@ -233,7 +233,26 @@ export function ProviderSettings({
             ))}
           </Flex>
           <Box minWidth="0">
-            {editing ? (
+            {pending ? (
+              <Dialog
+                open
+                onOpenChange={(value) => {
+                  if (!value) setPending(null);
+                }}
+              >
+                <Dialog.Header caption={u("unsaved")} />
+                <Dialog.Body>{u("unsavedHint")}</Dialog.Body>
+                <Dialog.Footer
+                  textButtonCancel={u("cancel")}
+                  textButtonApply={u("discard")}
+                  onClickButtonCancel={() => setPending(null)}
+                  onClickButtonApply={() => {
+                    open(pending.provider, pending.close);
+                    setPending(null);
+                  }}
+                />
+              </Dialog>
+            ) : editing ? (
               <Dialog
                 open
                 maxWidth="m"
@@ -443,24 +462,6 @@ export function ProviderSettings({
           </Box>
         </Flex>
       )}
-      <Dialog
-        open={Boolean(pending)}
-        onOpenChange={(v) => {
-          if (!v) setPending(null);
-        }}
-      >
-        <Dialog.Header caption={u("unsaved")} />
-        <Dialog.Body>{u("unsavedHint")}</Dialog.Body>
-        <Dialog.Footer
-          textButtonCancel={u("cancel")}
-          textButtonApply={u("discard")}
-          onClickButtonCancel={() => setPending(null)}
-          onClickButtonApply={() => {
-            open(pending?.provider, pending?.close);
-            setPending(null);
-          }}
-        />
-      </Dialog>
     </Flex>
   );
 }

@@ -12,8 +12,10 @@ const require = createRequire(import.meta.url);
 const electronVersion = require("electron/package.json").version;
 const ptyVersion = require("node-pty/package.json").version;
 const version = process.env.RUNOZA_DESKTOP_VERSION ?? "0.0.0";
+const isMac = process.platform === "darwin";
+const executableName = isMac ? "Runóza" : "runoza";
 // Refuse to remove a bundle backing a running client and its open drafts.
-if (process.platform === "darwin") {
+if (isMac) {
   const running = execFileSync("/bin/ps", ["-axo", "comm="], {
     encoding: "utf8",
   });
@@ -82,6 +84,7 @@ await writeFile(
   JSON.stringify({
     name: "runoza",
     productName: "Runóza",
+    author: "Runóza contributors",
     version,
     license: "Apache-2.0",
     main: "src/main.cjs",
@@ -91,6 +94,7 @@ await writeFile(
 const paths = await packager({
   dir: stage,
   name: "Runóza",
+  executableName,
   platform: process.platform,
   arch: process.arch,
   electronVersion,
@@ -109,17 +113,15 @@ if (process.env.RUNOZA_DESKTOP_SMOKE === "1") {
   for (const path of paths) {
     const executable = resolve(
       path,
-      process.platform === "darwin"
-        ? "Runóza.app/Contents/MacOS/Runóza"
+      isMac
+        ? `Runóza.app/Contents/MacOS/${executableName}`
         : process.platform === "win32"
-          ? "Runóza.exe"
-          : "Runóza",
+          ? `${executableName}.exe`
+          : executableName,
     );
     const resources = resolve(
       path,
-      process.platform === "darwin"
-        ? "Runóza.app/Contents/Resources"
-        : "resources",
+      isMac ? "Runóza.app/Contents/Resources" : "resources",
     );
     execFileSync(
       executable,

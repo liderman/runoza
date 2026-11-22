@@ -96,11 +96,9 @@ for (const theme of ["light", "dark"] as const)
         }),
       );
       await user.click(
-        await screen.findByRole(
-          "button",
-          { name: locale === "ru" ? "Не сохранять" : "Discard changes" },
-          { timeout: 3000 },
-        ),
+        await screen.findByRole("button", {
+          name: locale === "ru" ? "Не сохранять" : "Discard changes",
+        }),
       );
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       await user.click(screen.getByRole("button", { name: editName }));
