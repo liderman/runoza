@@ -11,8 +11,8 @@ From a tested commit on `main`, push a version tag. Use a suffix such as `-alpha
 `-beta.1`, or `-rc.1` to mark a prerelease.
 
 ```sh
-git tag v0.1.0-alpha.2
-git push origin v0.1.0-alpha.2
+git tag vX.Y.Z-alpha.1
+git push origin vX.Y.Z-alpha.1
 ```
 
 The workflow reruns CI at the tagged commit and builds the Electron app on native Windows,

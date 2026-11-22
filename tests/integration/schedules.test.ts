@@ -286,7 +286,8 @@ test(
       await sql`UPDATE desktop_devices SET last_seen=now() WHERE id=${device}::uuid`.execute(
         db,
       );
-      await sql`UPDATE schedule_runs SET available_at=now() WHERE id=${offrun.id}::uuid`.execute(
+      // Make the retry due even when PostgreSQL and the JS tick use different clock precision.
+      await sql`UPDATE schedule_runs SET available_at=now()-interval '1 second' WHERE id=${offrun.id}::uuid`.execute(
         db,
       );
       await tick();
@@ -319,7 +320,7 @@ test(
       );
       await tick();
       assert.equal((await history(cap.id))[0].error_code, "RUN_LIMIT");
-      await sql`UPDATE schedule_runs SET deadline_at=now()-interval '1 minute',available_at=now() WHERE id=${cr.id}::uuid`.execute(
+      await sql`UPDATE schedule_runs SET deadline_at=now()-interval '1 minute',available_at=now()-interval '1 second' WHERE id=${cr.id}::uuid`.execute(
         db,
       );
       await tick();
