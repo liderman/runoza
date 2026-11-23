@@ -1,3 +1,4 @@
+import { registerProjectCollections } from "./project-collections.ts";
 import { owned, messagesFor } from "@runoza/chat";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
@@ -8,6 +9,7 @@ import {
   projectAccess,
   fileAccess,
   publicFile,
+  indexProjectFile,
   extractText,
   byteRange,
   type StoredFile,
@@ -27,6 +29,7 @@ export async function registerResources(
   storage?: StorageService,
 ) {
   const { db } = ctx;
+  registerProjectCollections(app, ctx);
   const store = () => storage ?? fail(503, "STORAGE_UNAVAILABLE");
   app.get("/api/v1/projects", async (req) => {
     const u = await ctx.identity(req);
@@ -181,6 +184,70 @@ export async function registerResources(
         await audit(trx, u, "project.deleted", req.params.id);
       });
       return { ok: true };
+    },
+  );
+  app.put<{
+    Params: { id: string; fileId: string };
+    Body: { enabled: boolean };
+  }>(
+    "/api/v1/projects/:id/files/:fileId/search",
+    {
+      schema: {
+        params: object({ id: uuid, fileId: uuid }, ["id", "fileId"]),
+        body: object({ enabled: { type: "boolean" } }, ["enabled"]),
+      },
+    },
+    async (req) => {
+      const u = await ctx.identity(req);
+      await indexProjectFile(
+        db,
+        u,
+        req.params.id,
+        req.params.fileId,
+        req.body.enabled,
+      );
+      return { ok: true };
+    },
+  );
+  app.get<{ Params: { id: string; message: string; ordinal: number } }>(
+    "/api/v1/conversations/:id/messages/:message/sources/:ordinal",
+    {
+      schema: {
+        params: object(
+          {
+            id: uuid,
+            message: uuid,
+            ordinal: { type: "integer", minimum: 1, maximum: 5 },
+          },
+          ["id", "message", "ordinal"],
+        ),
+      },
+    },
+    async (req, reply) => {
+      const u = await ctx.identity(req);
+      const c = await owned(db, u, req.params.id);
+      reply.header("cache-control", "no-store");
+      const evidence = (
+        await sql<{
+          name: string;
+          sha256: string;
+          heading: string;
+          position: number;
+          body: string;
+          before: string | null;
+          after: string | null;
+        }>`
+        SELECT f.name,f.sha256,p.page,p.heading,p.position,p.body,prev.body AS before,nxt.body AS after
+        FROM message_sources s JOIN messages m ON m.id=s.message_id
+        JOIN file_passages p ON p.id=s.passage_id JOIN files f ON f.id=p.file_id
+        LEFT JOIN file_passages prev ON prev.file_id=f.id AND prev.position=p.position-1
+        LEFT JOIN file_passages nxt ON nxt.file_id=f.id AND nxt.position=p.position+1
+        WHERE m.conversation_id=${c.id}::uuid AND m.id=${req.params.message}::uuid AND s.ordinal=${req.params.ordinal}
+        AND f.status='ready' AND f.searchable AND f.project_id=${c.project_id}::uuid`.execute(
+          db,
+        )
+      ).rows[0];
+      return evidence ?? fail(404, "NOT_FOUND");
     },
   );
   app.get<{ Querystring: { projectId?: string } }>(

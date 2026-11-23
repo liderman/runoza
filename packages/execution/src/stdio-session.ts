@@ -4,7 +4,7 @@ import {
   type JSONRPCMessage,
 } from "@modelcontextprotocol/client";
 import { randomUUID } from "node:crypto";
-import { McpError, validateTools } from "./mcp.ts";
+import { type AskForInput, McpError, validateTools } from "./mcp.ts";
 import type { Executor } from "./index.ts";
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
 // Runs only in an isolated executor. The trusted API/worker never spawns project code.
@@ -21,9 +21,9 @@ def collect_stderr():
   stderr=(stderr+chunk)[-8000:]
 threading.Thread(target=collect_stderr,daemon=True).start()
 selector=selectors.DefaultSelector();selector.register(p.stdout,selectors.EVENT_READ)
-buffer=b'';started=time.monotonic();last=started
+outer=None;waiting=None;buffer=b'';started=time.monotonic();last=started
 try:
- while time.monotonic()-started<3600 and time.monotonic()-last<300:
+ while time.monotonic()-started<3600 and time.monotonic()-last<660:
   try: client,_=sock.accept()
   except socket.timeout: continue
   last=time.monotonic();client.settimeout(30)
@@ -40,15 +40,19 @@ try:
    message=request.get('message');messages=[]
    if message is not None:
     p.stdin.write((json.dumps(message)+'\n').encode());p.stdin.flush()
-    if 'id' in message and 'method' in message:
+    is_request='id' in message and 'method' in message
+    is_answer='id' in message and 'method' not in message and waiting is not None and message['id']==waiting
+    if is_request or is_answer:
+     if is_request: outer=message['id']
+     waiting=None
      deadline=time.monotonic()+25;total=0;done=False
      while not done and time.monotonic()<deadline:
       while b'\n' in buffer:
        line,buffer=buffer.split(b'\n',1);reply=json.loads(line)
        if 'method' in reply and 'id' in reply:
-        p.stdin.write((json.dumps({'jsonrpc':'2.0','id':reply['id'],'error':{'code':-32601,'message':'Unsupported client capability'}})+'\n').encode());p.stdin.flush();continue
+        waiting=reply['id'];messages.append(reply);done=True;break
        messages.append(reply)
-       if reply.get('id')==message['id']: done=True;break
+       if reply.get('id')==outer: outer=None;done=True;break
       if done: break
       if not selector.select(.2): continue
       chunk=os.read(p.stdout.fileno(),65536)
@@ -95,6 +99,7 @@ finally: s.close()
 `;
 export class ExecutorStdioMcp {
   private client: Client;
+  private ask?: AskForInput;
   private connected?: Promise<void>;
   private socket = "/tmp/runoza-mcp-" + randomUUID() + ".sock";
   private transport: Transport;
@@ -109,6 +114,7 @@ export class ExecutorStdioMcp {
     private signal: AbortSignal,
     private cwd = "/tmp/workspace",
     onToolsChanged?: () => void,
+    interactive = false,
   ) {
     if (
       !command.length ||
@@ -134,6 +140,7 @@ export class ExecutorStdioMcp {
     this.client = new Client(
       { name: "Runoza workspace", version: "0.0.0" },
       {
+        capabilities: interactive ? { elicitation: { form: {} } } : {},
         listMaxPages: 64,
         listChanged: {
           tools: {
@@ -144,6 +151,16 @@ export class ExecutorStdioMcp {
         },
       },
     );
+    if (interactive)
+      this.client.setRequestHandler("elicitation/create", (request, ctx) =>
+        request.params.mode === "url" || !this.ask
+          ? Promise.resolve({ action: "cancel" as const })
+          : this.ask(
+              request.params.message,
+              request.params.requestedSchema,
+              ctx.mcpReq.signal,
+            ),
+      );
   }
   private async rpc(
     request: { message?: JSONRPCMessage; close?: boolean },
@@ -194,12 +211,22 @@ export class ExecutorStdioMcp {
       (await this.client.listTools(undefined, { signal: this.signal })).tools,
     );
   }
-  async call(name: string, args: unknown) {
-    await this.connect();
-    return this.client.callTool(
-      { name, arguments: args as Record<string, unknown> },
-      { signal: this.signal },
-    );
+  async call(name: string, args: unknown, ask?: AskForInput) {
+    if (this.ask) throw new McpError("MCP_SESSION_BUSY");
+    const life = new AbortController();
+    if (ask)
+      this.ask = (msg, schema, sig) =>
+        ask(msg, schema, AbortSignal.any([this.signal, sig, life.signal]));
+    try {
+      await this.connect();
+      return await this.client.callTool(
+        { name, arguments: args as Record<string, unknown> },
+        { signal: this.signal, ...(ask ? { timeout: 630000 } : {}) },
+      );
+    } finally {
+      life.abort();
+      this.ask = undefined;
+    }
   }
   async close() {
     await this.client.close();

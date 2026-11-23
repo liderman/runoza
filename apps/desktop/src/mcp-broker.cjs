@@ -1,3 +1,4 @@
+const { createFormSession } = require("./mcp-form.cjs");
 const { Client } = require("@modelcontextprotocol/client");
 const { StdioClientTransport } = require("@modelcontextprotocol/client/stdio");
 const { createHash } = require("node:crypto");
@@ -24,10 +25,14 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
     if (p.method === "close") {
       const session = sessions.get(key);
       sessions.delete(key);
-      if (session) await (await session).client.close();
+      if (session) {
+        const active = await session;
+        active.forms?.stop();
+        await active.client.close();
+      }
       return {};
     }
-    if (!["tools/list", "tools/call"].includes(p.method))
+    if (!["tools/list", "tools/call", "form/answer"].includes(p.method))
       throw Error("MCP_METHOD");
     let local = {};
     try {
@@ -42,6 +47,8 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
       throw error;
     }
     let pending = sessions.get(key);
+    if (!pending && p.method === "form/answer")
+      throw Error("MCP_QUESTION_EXPIRED");
     if (!pending) {
       pending = (async () => {
         if (!(await approve(root, p.command.join(" "))))
@@ -54,10 +61,14 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
           stderr: "pipe",
           maxBufferSize: 1048576,
         });
+        const forms = p.sessionId.endsWith(":forms")
+          ? createFormSession()
+          : undefined;
         let catalogChanged = false;
         const client = new Client(
           { name: "Runoza desktop", version: "0.0.0" },
           {
+            capabilities: forms ? { elicitation: { form: {} } } : {},
             listMaxPages: 64,
             listChanged: {
               tools: {
@@ -70,6 +81,10 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
             },
           },
         );
+        if (forms)
+          client.setRequestHandler("elicitation/create", (req, ctx) =>
+            forms.ask(req.params, ctx.mcpReq.signal),
+          );
         let stderr = "";
         transport.stderr?.on("data", (b) => {
           stderr = (stderr + b.toString()).slice(-8000);
@@ -77,7 +92,10 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
           if (diagnostics.size > 100)
             diagnostics.delete(diagnostics.keys().next().value);
         });
-        client.onclose = () => sessions.delete(key);
+        client.onclose = () => {
+          forms?.stop();
+          sessions.delete(key);
+        };
         try {
           await client.connect(transport, {
             signal: cancellation
@@ -87,6 +105,7 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
           });
           return {
             client,
+            forms,
             transport,
             lastUsed: Date.now(),
             getStderr: () => stderr,
@@ -106,6 +125,22 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
     }
     const session = await pending;
     session.lastUsed = Date.now();
+    if (p.method === "form/answer")
+      return (
+        session.forms?.resume(p.params) ??
+        Promise.reject(Error("MCP_QUESTION_EXPIRED"))
+      );
+    if (p.method === "tools/call" && session.forms)
+      return session.forms.start(
+        async (signal) => ({
+          ...(await session.client.callTool(p.params, {
+            signal,
+            timeout: 630000,
+          })),
+          _runozaCatalogChanged: session.takeCatalogChanged(),
+        }),
+        cancellation ?? new AbortController().signal,
+      );
     const signal = cancellation
       ? AbortSignal.any([cancellation, AbortSignal.timeout(30000)])
       : AbortSignal.timeout(30000);
@@ -128,7 +163,7 @@ function createMcpBroker({ approve, environment, resolveEnvironment }) {
     for (const [key, pending] of sessions)
       void pending
         .then((s) => {
-          if (Date.now() - s.lastUsed > 300000) {
+          if (!s.forms?.active && Date.now() - s.lastUsed > 300000) {
             sessions.delete(key);
             return s.client.close();
           }

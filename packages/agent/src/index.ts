@@ -336,14 +336,17 @@ export class PiAgentRuntime implements AgentRuntime {
             )
               throw new ExecutionError("MCP_TOOL_DENIED");
             if (mc?.transport === "stdio")
-              stdioSessions.set(input.id + ":" + mc.id, {
-                command: mc.command,
-                configuration: {
-                  source: mc.config_source ?? undefined,
-                  cwd: mc.cwd,
-                  envRefs: mc.env_refs,
+              stdioSessions.set(
+                input.id + ":" + mc.id + (mc.interactive ? ":forms" : ""),
+                {
+                  command: mc.command,
+                  configuration: {
+                    source: mc.config_source ?? undefined,
+                    cwd: mc.cwd,
+                    envRefs: mc.env_refs,
+                  },
                 },
-              });
+              );
             const fingerprint = mc
               ? JSON.stringify([
                   mc.transport,
@@ -500,6 +503,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   fingerprint,
                   mcpSessions,
                   workspaceMcpSessions,
+                  a.id,
                 );
                 await sql`UPDATE code_actions SET status=${result.failed ? "failed" : "completed"},output=${result.output} WHERE id=${a.id}::uuid`.execute(
                   db,

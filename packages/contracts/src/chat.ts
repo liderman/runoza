@@ -21,6 +21,9 @@ export interface ChatMessage {
   id: string;
   parent_id: string | null;
   attachments?: FileView[];
+  search_project?: boolean;
+  search_collection?: string | null;
+  sources?: { ordinal: number; name: string | null }[];
   role: "user" | "assistant";
   content: string;
   created_at: string;
@@ -108,6 +111,8 @@ export interface FileView {
   status: "pending" | "ready" | "deleting";
   projectId: string | null;
   readable: boolean;
+  searchable?: boolean;
+  pdfState?: "queued" | "indexing" | "unavailable" | "failed" | null;
   sha256: string | null;
 }
 export interface ProjectView {
@@ -137,6 +142,7 @@ export interface CodeAction {
   file_id: string | null;
 }
 export interface CodeActivity {
+  questions?: import("./tool-input.ts").ToolQuestion[];
   localWorkspace?: boolean;
   canManage?: boolean;
   mode: string;

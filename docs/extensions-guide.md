@@ -139,6 +139,12 @@ personal cache; the next search may request a fresh schema. A mutating call is n
 after an unknown outcome.
 
 
+## Questions from remote MCP tools
+
+During an interactive HTTP or stdio tool call, a server can request a short form. The run owner sees the server, tool and question in the activity card. **Send answer**, **Decline** and **Cancel** respond to the same call. The sidebar marks chats needing input. A form answer supplies data and grants no new tool permissions. Other project members cannot retrieve the form or submit a response.
+
+The initial form supports text, dates, numbers, integers, booleans and simple single-choice fields. Unsupported schemas are declined. Local desktop and isolated workspace stdio brokers keep the process alive across questions. Only the active call may resume with its single-use response. URL prompts and credential collection are outside the supported form schema. Scheduled runs do not advertise interactive forms. The worker waits 120 seconds by default. Set `MCP_FORM_TIMEOUT_SECONDS` in the worker environment to an integer from 5 to 300. A disconnected browser can reopen the chat while the call is live. Stopping or losing the live call closes the question. An expired form cannot restart the tool. Administrators can disable **Questions from MCP tools** in feature settings.
+
 ## Action approvals
 
 New conversations start in **Ask me**. **Full access** applies to your account in the selected

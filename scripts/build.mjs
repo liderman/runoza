@@ -12,6 +12,11 @@ for (const root of ["apps", "packages"])
       });
   }
 
+await cp(
+  "packages/resources/src/pdf-parser.mjs",
+  "packages/resources/dist/pdf-parser.mjs",
+);
+
 // Runtime JSON assets must also be present in a clean, source-only build.
 await cp(
   "packages/providers/src/models-dev.snapshot.json",

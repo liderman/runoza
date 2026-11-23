@@ -43,6 +43,7 @@ export const openapi = {
 export * from "./auth.ts";
 
 export * from "./chat.ts";
+export * from "./tool-input.ts";
 export * from "./models.ts";
 
 export * from "./schedules.ts";

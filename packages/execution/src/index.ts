@@ -31,7 +31,7 @@ export interface Executor {
   mcpRequest?(
     sessionId: string,
     command: string[],
-    method: "tools/list" | "tools/call" | "close",
+    method: "tools/list" | "tools/call" | "close" | "form/answer",
     params: unknown,
     signal: AbortSignal,
     configuration?: {
@@ -583,6 +583,7 @@ export {
 } from "./mcp.ts";
 export type { McpTool } from "./mcp.ts";
 
+export type { AskForInput } from "./mcp.ts";
 export { ExecutorStdioMcp } from "./stdio-session.ts";
 
 export {

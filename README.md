@@ -29,7 +29,7 @@ The default stack includes PostgreSQL and RustFS. See the [deployment guide](doc
 
 1. Open **Model providers**, add a connection, and enable the models you want to use.
 2. Start a conversation and select a model.
-3. To work with shared instructions or files, create a project and start a conversation in it. Use **+ → Attachments** to add files to a message.
+3. To work with shared instructions or files, create a project and start a conversation in it. Use **+ → Attachments** to add files to a message. For cited answers, open the project’s **Files** tab, enable indexing for a PDF, Markdown or text file, then choose **+ → Search project files** in chat. Select a named collection to narrow the search.
 
 The [readiness endpoint](http://127.0.0.1:3000/api/v1/status) and [OpenAPI specification](http://127.0.0.1:3000/openapi.json) use the same port. Set `PORT` in `.env` to change it.
 

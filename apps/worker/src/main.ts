@@ -9,12 +9,13 @@ import {
   createDatabase,
   assertSchema,
   heartbeat,
+  sql,
   removeHeartbeat,
 } from "@runoza/db";
 import { createJobs } from "@runoza/jobs";
 import { startScheduleWorker, startChatWorker } from "@runoza/chat";
 import { createStorage } from "@runoza/storage";
-import { cleanupFiles } from "@runoza/resources";
+import { startPdfIndexer, cleanupFiles } from "@runoza/resources";
 async function main() {
   const telemetry = initializeTelemetry("worker");
   const config = loadConfig(),
@@ -25,11 +26,16 @@ async function main() {
   const environments = new PostgresEnvironmentProvider(db, terminalConfig());
   const runtime = new PiAgentRuntime(db, environments, storage);
   let stopWorkspace: (() => Promise<void>) | undefined;
+  let stopPdf: (() => Promise<void>) | undefined;
   let cleaning = false;
   const sweep = setInterval(() => {
     if (cleaning) return;
     cleaning = true;
-    void Promise.all([cleanupFiles(db, storage), environments.sweep()])
+    void Promise.all([
+      cleanupFiles(db, storage),
+      environments.sweep(),
+      sql`DELETE FROM mcp_questions WHERE expires_at<=now()`.execute(db),
+    ])
       .catch(() => logEvent("warn", "file_cleanup_failed"))
       .finally(() => {
         cleaning = false;
@@ -48,6 +54,7 @@ async function main() {
     await stopSchedules?.();
     clearInterval(sweep);
     await stopWorkspace?.();
+    await stopPdf?.();
     storage.close();
     await rm("/tmp/runoza-worker-heartbeat", { force: true });
     await boss.stop();
@@ -73,6 +80,7 @@ async function main() {
     await assertSchema(db);
     startupStage = "queue";
     await boss.start();
+    stopPdf = startPdfIndexer(db, storage);
     await boss.work("system.ping", async (jobs) => {
       for (const job of jobs)
         logEvent("info", "job_completed", { runId: job.id, workerId: id });

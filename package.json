@@ -16,7 +16,7 @@
     "build": "npm run build:server && npm run build:desktop",
     "lint": "node scripts/check-boundaries.mjs && prettier --check apps packages scripts tests deploy .github",
     "test": "tsx --test tests/unit/*.test.ts",
-    "test:integration": "tsx --test tests/integration/*.test.ts",
+    "test:integration": "tsx --test --test-concurrency=1 tests/integration/*.test.ts",
     "start": "node apps/server/dist/main.js",
     "worker": "node apps/worker/dist/main.js",
     "migrate": "node apps/migrate/dist/main.js",

@@ -14,6 +14,8 @@ import {
 } from "./MessageTranscript.tsx";
 import { useQuery } from "@tanstack/react-query";
 import { ExtensionPicker } from "./ExtensionPicker.tsx";
+import { useCollections } from "./ProjectCollections.tsx";
+import { SourceEvidence, type SourceSelection } from "./SourceEvidence.tsx";
 import { ComposerAddMenu } from "./ComposerAddMenu.tsx";
 import { useSkillCommands, SkillCommandList } from "./SkillCommands.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
@@ -107,6 +109,38 @@ export function ChatWorkspace({
     "default",
   );
   const [prompt, setPrompt] = useConversationDraft(draftKey + ":prompt", "");
+  const [searchProject, setSearchProject] = useConversationDraft(
+    draftKey + ":search-project",
+    false,
+  );
+  const [collectionId, setCollection] = useConversationDraft(
+    draftKey + ":collection",
+    "",
+  );
+  const [source, setSource] = useState<SourceSelection | null>(null);
+  const sourceTrigger = useRef<HTMLElement | null>(null);
+  function openSource(selection: SourceSelection, trigger: HTMLElement) {
+    sourceTrigger.current = trigger;
+    setSource(selection);
+  }
+  function closeSource() {
+    const trigger = sourceTrigger.current;
+    const fallback =
+      source && "source-" + source.message + "-" + source.ordinal;
+    setSource(null);
+    requestAnimationFrame(() => {
+      const inline =
+        trigger?.tagName === "A" && source
+          ? document.querySelector<HTMLElement>(
+              `[data-citation-message="${source.message}"] a[href="#source-${source.ordinal}"]`,
+            )
+          : null;
+      const target = trigger?.isConnected
+        ? trigger
+        : inline || (fallback && document.getElementById(fallback));
+      if (target) target.focus({ preventScroll: true });
+    });
+  }
   const [fileIds, setFileIds] = useConversationDraft<string[]>(
     draftKey + ":files",
     [],
@@ -262,6 +296,7 @@ export function ChatWorkspace({
   const scopeProject = id
     ? (snapshot?.conversation.project_id ?? "")
     : projectId;
+  const collectionQuery = useCollections(api, scopeProject, searchProject);
   const readOnly =
     snapshot?.conversation.accessRole === "viewer" ||
     (!id && projects.find((p) => p.id === projectId)?.role === "viewer");
@@ -318,7 +353,7 @@ export function ChatWorkspace({
           { signal },
         )
         .then((x) => x.files),
-    enabled: fileIds.length > 0,
+    enabled: fileIds.length > 0 || searchProject,
   });
   const [compactWorkspace, setCompactWorkspace] = useState(false);
   useEffect(() => {
@@ -337,12 +372,14 @@ export function ChatWorkspace({
     Boolean(
       prompt.trim() ||
         fileIds.length ||
+        searchProject ||
         (dialog === "edit" && draft !== (editing?.content ?? "")) ||
         (dialog === "rename" && draft !== (snapshot?.conversation.title ?? "")),
     ),
     () => {
       setPrompt("");
       setFileIds([]);
+      setSearchProject(false);
       setDialog(null);
     },
   );
@@ -542,6 +579,8 @@ export function ChatWorkspace({
         retryMessageId,
         parentId,
         fileIds,
+        searchProject,
+        collectionId,
       ]);
       if (pending.current?.signature !== signature)
         pending.current = { signature, requestId: crypto.randomUUID() };
@@ -559,6 +598,16 @@ export function ChatWorkspace({
             ? { retryMessageId }
             : {
                 content,
+                searchProject:
+                  parentId !== undefined
+                    ? editing?.search_project
+                    : searchProject,
+                collectionId:
+                  parentId !== undefined
+                    ? (editing?.search_collection ?? undefined)
+                    : searchProject
+                      ? collectionId || undefined
+                      : undefined,
                 fileIds:
                   parentId !== undefined
                     ? (editing?.attachments ?? []).map((f) => f.id)
@@ -583,6 +632,7 @@ export function ChatWorkspace({
         });
       pending.current = null;
       setFileIds([]);
+      setSearchProject(false);
       setSkillVersionIds([]);
       await load(chatId);
       setSubscription((n) => n + 1);
@@ -1081,6 +1131,16 @@ export function ChatWorkspace({
               </Button>
             </Flex>
           )}
+        {source && id && (
+          <SourceEvidence
+            key={source.message + source.ordinal}
+            api={api}
+            conversation={id}
+            locale={locale}
+            source={source}
+            onClose={closeSource}
+          />
+        )}
         <Box
           flex="1"
           minHeight="0"
@@ -1115,6 +1175,41 @@ export function ChatWorkspace({
                 locale={locale}
               >
                 <MessageList<ActionPart>
+                  mdxProps={{
+                    getMarkdownExtraProps: (message) => ({
+                      "data-citation-message": message.id,
+                      onClickCapture: (event) => {
+                        const link =
+                          event.target instanceof Element
+                            ? event.target.closest("a")
+                            : null;
+                        const match = /^#source-(\d+)$/.exec(
+                          link?.getAttribute("href") ?? "",
+                        );
+                        if (!match) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const hit = map
+                          .get(message.id ?? "")
+                          ?.sources?.find(
+                            (item) => item.ordinal === Number(match[1]),
+                          );
+                        if (
+                          hit?.name &&
+                          message.id &&
+                          link instanceof HTMLElement
+                        )
+                          openSource(
+                            {
+                              message: message.id,
+                              ordinal: hit.ordinal,
+                              name: hit.name,
+                            },
+                            link,
+                          );
+                      },
+                    }),
+                  }}
                   scrollMode="external"
                   thinkingMessageView="grouped"
                   messageRendererRegistry={transcriptRegistry}
@@ -1123,33 +1218,76 @@ export function ChatWorkspace({
                     const run = snapshot?.runs.find(
                       (r) => r.assistant_message_id === message.id,
                     );
-                    return run ? (
-                      <RunActivity
-                        api={api}
-                        run={run}
-                        locale={locale}
-                        ordered={Boolean(
-                          snapshot?.messages.find((m) => m.id === message.id)
-                            ?.parts,
+                    const sources = map.get(message.id ?? "")?.sources ?? [];
+                    return (
+                      <>
+                        {sources.length > 0 && (
+                          <Flex wrap="wrap" gap="spacing-1" alignItems="center">
+                            <Text color="secondary">
+                              {locale === "ru" ? "Источники" : "Sources"}
+                            </Text>
+                            {sources.map((hit) => (
+                              <Button
+                                key={hit.ordinal}
+                                id={"source-" + message.id + "-" + hit.ordinal}
+                                view="flat"
+                                size="s"
+                                disabled={!hit.name}
+                                onClick={(event) => {
+                                  if (hit.name && message.id)
+                                    openSource(
+                                      {
+                                        message: message.id,
+                                        ordinal: hit.ordinal,
+                                        name: hit.name,
+                                      },
+                                      event.currentTarget,
+                                    );
+                                }}
+                              >
+                                [{hit.ordinal}]{" "}
+                                {hit.name ??
+                                  (locale === "ru"
+                                    ? "Недоступен"
+                                    : "Unavailable")}
+                              </Button>
+                            ))}
+                          </Flex>
                         )}
-                        reasoning={
-                          snapshot?.messages.find((m) => m.id === message.id)
-                            ?.reasoning
-                        }
-                      />
-                    ) : snapshot?.messages.find((m) => m.id === message.id)
-                        ?.reasoning ? (
-                      <Disclosure
-                        summary={locale === "ru" ? "Рассуждения" : "Reasoning"}
-                      >
-                        <pre className="reasoning-text">
-                          {
-                            snapshot.messages.find((m) => m.id === message.id)
-                              ?.reasoning
-                          }
-                        </pre>
-                      </Disclosure>
-                    ) : null;
+                        {run ? (
+                          <RunActivity
+                            api={api}
+                            run={run}
+                            locale={locale}
+                            ordered={Boolean(
+                              snapshot?.messages.find(
+                                (m) => m.id === message.id,
+                              )?.parts,
+                            )}
+                            reasoning={
+                              snapshot?.messages.find(
+                                (m) => m.id === message.id,
+                              )?.reasoning
+                            }
+                          />
+                        ) : snapshot?.messages.find((m) => m.id === message.id)
+                            ?.reasoning ? (
+                          <Disclosure
+                            summary={
+                              locale === "ru" ? "Рассуждения" : "Reasoning"
+                            }
+                          >
+                            <pre className="reasoning-text">
+                              {
+                                snapshot.messages.find(
+                                  (m) => m.id === message.id,
+                                )?.reasoning
+                              }
+                            </pre>
+                          </Disclosure>
+                        ) : null}
+                      </>
+                    );
                   }}
                   status={
                     active
@@ -1238,6 +1376,59 @@ export function ChatWorkspace({
                         : "Open workspace"}
                     </Menu.Item>
                   </Menu>
+                </Flex>
+              )}
+              {searchProject && scopeProject && (
+                <Flex alignItems="center" gap="spacing-2" wrap="wrap">
+                  <Button
+                    size="s"
+                    view="outlined"
+                    onClick={() => setSearchProject(false)}
+                    aria-label={
+                      locale === "ru"
+                        ? "Убрать поиск по проекту"
+                        : "Remove project search"
+                    }
+                  >
+                    {locale === "ru" ? "Поиск" : "Search"} ·{" "}
+                    {projects.find((p) => p.id === scopeProject)?.name ??
+                      (locale === "ru" ? "Проект" : "Project")}{" "}
+                    <Icon data={Xmark} />
+                  </Button>
+                  {Boolean(collectionQuery.data?.length || collectionId) && (
+                    <Select
+                      size="s"
+                      aria-label={
+                        locale === "ru" ? "Область поиска" : "Search scope"
+                      }
+                      value={[collectionId || "all"]}
+                      onUpdate={(v) =>
+                        setCollection(v[0] === "all" ? "" : (v[0] ?? ""))
+                      }
+                      options={[
+                        {
+                          value: "all",
+                          content:
+                            locale === "ru"
+                              ? "Все файлы проекта"
+                              : "All project files",
+                        },
+                        ...(collectionQuery.data ?? []).map((c) => ({
+                          value: c.id,
+                          content: c.name,
+                        })),
+                      ]}
+                    />
+                  )}
+                  {attachmentQuery.data &&
+                    attachmentQuery.data.length < 200 &&
+                    !attachmentQuery.data.some((f) => f.searchable) && (
+                      <Text color="secondary">
+                        {locale === "ru"
+                          ? "Для поиска включите файл через меню «Проект → Файлы»."
+                          : "Make a file searchable in Project → Files first."}
+                      </Text>
+                    )}
                 </Flex>
               )}
               {fileIds.length > 0 && (
@@ -1349,6 +1540,16 @@ export function ChatWorkspace({
                 >
                   <ComposerAddMenu
                     locale={locale}
+                    onSearchProject={
+                      scopeProject &&
+                      capabilities.flags.projectSearch !== false &&
+                      !searchProject
+                        ? () => {
+                            setCollection("");
+                            setSearchProject(true);
+                          }
+                        : undefined
+                    }
                     attachmentCount={fileIds.length}
                     disabled={readOnly || busy || Boolean(active)}
                     onChoose={(item) => {

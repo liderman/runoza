@@ -1,3 +1,6 @@
+import { projectLibraryMigration } from "./project-library-migration.ts";
+import { toolInputMigration } from "./tool-input-migration.ts";
+import { knowledgeMigration } from "./knowledge-migration.ts";
 import { permissionPatternMigration } from "./permission-pattern-migration.ts";
 import { runFullAccessMigration } from "./run-full-access-migration.ts";
 import { chatDefaultsMigration } from "./chat-defaults-migration.ts";
@@ -28,7 +31,7 @@ import { chatMigration } from "./chat-migration.ts";
 import { resourcesMigration } from "./resources-migration.ts";
 import { agentMigration } from "./agent-migration.ts";
 import { workspaceMigration } from "./workspace-migration.ts";
-export const SCHEMA_VERSION = "030_run_full_access";
+export const SCHEMA_VERSION = "033_project_library";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -95,6 +98,9 @@ export const migrations: Record<string, Migration> = {
   "028_chat_defaults": chatDefaultsMigration,
   "029_permission_patterns": permissionPatternMigration,
   "030_run_full_access": runFullAccessMigration,
+  "031_project_knowledge": knowledgeMigration,
+  "032_mcp_questions": toolInputMigration,
+  "033_project_library": projectLibraryMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({

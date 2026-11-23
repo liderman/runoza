@@ -1,3 +1,4 @@
+import { ToolQuestionForm } from "./ToolQuestionForm.tsx";
 import { permissionPattern } from "@runoza/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { ToolMessage } from "@gravity-ui/aikit";
@@ -230,6 +231,18 @@ export function CodeActivity({
   return (
     <Box className="code-activity">
       <Flex direction="column" gap="spacing-3">
+        {data?.questions
+          ?.filter((q) => !actionId || q.actionId === actionId)
+          .map((q) => (
+            <ToolQuestionForm
+              key={q.id}
+              api={api}
+              runId={run.id}
+              question={q}
+              locale={locale}
+              refresh={() => void query.refetch()}
+            />
+          ))}
         {error && (
           <Alert
             theme="danger"

@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { PiAgentRuntime } from "@runoza/agent";
-import { executeRun } from "@runoza/chat";
+import { waitForToolInput } from "../../packages/agent/src/tool-input.ts";
+import { executeRun, runEvent } from "@runoza/chat";
 import { createStorage } from "@runoza/storage";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -348,9 +349,54 @@ test(
       const fixture = Fastify();
       let mcpCalls = 0;
       let selectedMcp = "";
+      let finishTool: ((value: unknown) => void) | undefined;
+      let toolCalls = 0;
       fixture.post("/mcp", async (req, reply) => {
         mcpCalls++;
         const b = req.body as any;
+        if (b.id === "question-date" && b.result) {
+          finishTool?.(b.result);
+          return reply.code(202).send();
+        }
+        if (b.method === "tools/call") {
+          toolCalls++;
+          reply.hijack();
+          reply.raw.writeHead(200, { "content-type": "text/event-stream" });
+          const event = (payload: unknown) =>
+            reply.raw.write(
+              "event: message\ndata: " + JSON.stringify(payload) + "\n\n",
+            );
+          finishTool = (result) => {
+            event({
+              jsonrpc: "2.0",
+              id: b.id,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: "MCP_ECHO_OK " + JSON.stringify(result),
+                  },
+                ],
+              },
+            });
+            reply.raw.end();
+          };
+          event({
+            jsonrpc: "2.0",
+            id: "question-date",
+            method: "elicitation/create",
+            params: {
+              mode: "form",
+              message: "Which date?",
+              requestedSchema: {
+                type: "object",
+                properties: { date: { type: "string", format: "date" } },
+                required: ["date"],
+              },
+            },
+          });
+          return;
+        }
         if (b.method === "notifications/initialized")
           return reply.code(202).send();
         return {
@@ -484,7 +530,31 @@ test(
           actionId: action.id,
           allow: true,
         });
+        let question;
+        for (let i = 0; i < 100; i++) {
+          question = (await call(alice, "/runs/" + run.id + "/activity"))
+            .questions[0];
+          if (question) break;
+          await delay(50);
+        }
+        assert.ok(question, "expected a live MCP question");
+        assert.equal(question.actionId, action.id);
+        const answer = "/runs/" + run.id + "/questions/" + question.id;
+        await call(bob, answer, "POST", { action: "decline" }, 404);
+        await call(
+          alice,
+          answer,
+          "POST",
+          { action: "accept", content: { date: "invalid" } },
+          400,
+        );
+        await call(alice, answer, "POST", {
+          action: "accept",
+          content: { date: "2026-11-23" },
+        });
+        await call(alice, answer, "POST", { action: "cancel" }, 404);
         await pending;
+        assert.equal(toolCalls, 1);
         assert.equal(
           (
             await sql<{
@@ -495,7 +565,92 @@ test(
           ).rows[0]!.status,
           "completed",
         );
-        assert.equal(mcpCalls, 3);
+        assert.equal(mcpCalls, 4);
+        // Simulate a waiting adapter on the existing synthetic action. The API and
+        // worker must agree about session loss, membership and expiry.
+        const project = await call(admin, "/projects", "POST", {
+          name: "Question ACL",
+        });
+        await sql`UPDATE conversations SET project_id=${project.id}::uuid WHERE id=${conv.id}::uuid`.execute(
+          db,
+        );
+        await sql`INSERT INTO project_members(project_id,user_id,role) VALUES(${project.id}::uuid,${alice.id}::uuid,'editor'),(${project.id}::uuid,${bob.id}::uuid,'viewer')`.execute(
+          db,
+        );
+        for (const outcome of ["decline", "timeout", "stop", "restart"]) {
+          await sql`UPDATE chat_runs SET status='running',heartbeat_at=now()-interval '2 minutes' WHERE id=${run.id}::uuid`.execute(
+            db,
+          );
+          await sql`UPDATE code_actions SET status='running' WHERE id=${action.id}::uuid`.execute(
+            db,
+          );
+          const waiting = waitForToolInput(
+            db,
+            action.id,
+            "calendar",
+            "date",
+            "Date?",
+            question.schema,
+            key,
+            AbortSignal.timeout(10000),
+            async () => {},
+          );
+          let q;
+          for (let i = 0; i < 40 && !q; i++) {
+            q = (await call(alice, "/runs/" + run.id + "/activity"))
+              .questions[0];
+            if (!q) await delay(50);
+          }
+          assert.ok(q);
+          const path: string = "/runs/" + run.id + "/questions/" + q.id;
+          assert.deepEqual(
+            (await call(bob, "/runs/" + run.id + "/activity")).questions,
+            [],
+          );
+          if (outcome === "decline") {
+            await sql`UPDATE project_members SET role='viewer' WHERE user_id=${alice.id}::uuid AND project_id=${project.id}::uuid`.execute(
+              db,
+            );
+            assert.deepEqual(
+              (await call(alice, "/runs/" + run.id + "/activity")).questions,
+              [],
+            );
+            await call(alice, path, "POST", { action: "decline" }, 403);
+            await sql`UPDATE project_members SET role='editor' WHERE user_id=${alice.id}::uuid AND project_id=${project.id}::uuid`.execute(
+              db,
+            );
+            const response = () =>
+              app.inject({
+                url: "/api/v1" + path,
+                method: "POST",
+                headers: alice.headers,
+                payload: { action: "decline" },
+              });
+            assert.deepEqual(
+              (await Promise.all([response(), response()]))
+                .map((r) => r.statusCode)
+                .sort(),
+              [200, 404],
+            );
+          } else if (outcome === "timeout") {
+            await sql`UPDATE mcp_questions SET expires_at=now()-interval '1 second' WHERE id=${q.id}::uuid`.execute(
+              db,
+            );
+          } else
+            await runEvent(
+              db,
+              run.id,
+              "finished",
+              undefined,
+              outcome === "stop" ? "cancelled" : "failed",
+              outcome === "stop" ? null : "WORKER_INTERRUPTED",
+            );
+          assert.equal(
+            (await waiting).action,
+            outcome === "decline" ? "decline" : "cancel",
+          );
+          await call(alice, path, "POST", { action: "cancel" }, 404);
+        }
         assert.ok(
           (
             await sql<{
@@ -503,7 +658,7 @@ test(
             }>`SELECT output FROM code_actions WHERE id=${action.id}::uuid`.execute(
               db,
             )
-          ).rows[0]!.output.includes("MCP_ECHO_OK"),
+          ).rows[0]!.output.includes("2026-11-23"),
         );
       } finally {
         storage.close();

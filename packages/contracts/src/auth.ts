@@ -56,13 +56,18 @@ export const authBodies = {
     },
     [],
   ),
-  flags: object({
-    chat: { type: "boolean" },
-    code: { type: "boolean" },
-    skills: { type: "boolean" },
-    mcp: { type: "boolean" },
-    schedules: { type: "boolean" },
-  }),
+  flags: object(
+    {
+      chat: { type: "boolean" },
+      code: { type: "boolean" },
+      skills: { type: "boolean" },
+      mcp: { type: "boolean" },
+      schedules: { type: "boolean" },
+      projectSearch: { type: "boolean" },
+      mcpForms: { type: "boolean" },
+    },
+    ["chat", "code", "skills", "mcp", "schedules"],
+  ),
   oidc: oidcSettingsJsonSchema,
   oidcStart: object({ intent: { type: "string", enum: ["login", "link"] } }, [
     "intent",

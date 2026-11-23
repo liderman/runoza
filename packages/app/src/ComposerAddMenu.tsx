@@ -8,10 +8,12 @@ export function ComposerAddMenu({
   disabled,
   attachmentCount,
   onChoose,
+  onSearchProject,
 }: {
   locale: "en" | "ru";
   disabled: boolean;
   attachmentCount: number;
+  onSearchProject?: () => void;
   onChoose: (item: ComposerAddition) => void;
 }) {
   const ru = locale === "ru";
@@ -42,6 +44,11 @@ export function ComposerAddMenu({
       >
         {attachments}
       </Menu.Item>
+      {onSearchProject && (
+        <Menu.Item onClick={onSearchProject}>
+          {ru ? "Поиск по файлам проекта" : "Search project files"}
+        </Menu.Item>
+      )}
       <Menu.Item
         icon={<Icon data={Sparkles} />}
         onClick={() => onChoose("skill")}

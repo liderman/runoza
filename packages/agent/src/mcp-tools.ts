@@ -1,4 +1,5 @@
-import { extensionCatalog } from "@runoza/resources";
+import { waitForToolInput } from "./tool-input.ts";
+import { projectAccess, extensionCatalog } from "@runoza/resources";
 import { sql, type Database } from "@runoza/db";
 import { secretBox } from "@runoza/auth";
 import {
@@ -8,6 +9,7 @@ import {
   stdioMcp,
   validateTools,
   ExecutionError,
+  type AskForInput,
   type Executor,
 } from "@runoza/execution";
 export async function mcpConfig(
@@ -20,6 +22,7 @@ export async function mcpConfig(
       id: string;
       name: string;
       transport: "http" | "stdio";
+      interactive: boolean;
       endpoint: string;
       command: string[];
       allowed_tools: string[];
@@ -44,7 +47,7 @@ export async function mcpConfig(
           envRefs?: Record<string, string>;
         }[];
       };
-    }>`SELECT m.id,m.name,m.transport,m.endpoint,m.command,m.allowed_tools,m.device_id,m.cwd,m.env_refs,m.config_source,r.owner_id,r.extension_manifest,v.organization_id,v.project_id,v.id AS conversation_id,c.ciphertext FROM chat_runs r JOIN conversations v ON v.id=r.conversation_id JOIN feature_flags f ON f.organization_id=v.organization_id AND f.flags->>'mcp'='true' JOIN mcp_connections m ON m.organization_id=v.organization_id AND r.mcp_connections ? m.id::text LEFT JOIN mcp_credentials c ON c.connection_id=m.id AND c.user_id=r.owner_id WHERE r.id=${runId}::uuid AND r.status='running' AND m.id=${connectionId}::uuid AND m.enabled`.execute(
+    }>`SELECT (f.flags->>'mcpForms' IS DISTINCT FROM 'false' AND NOT EXISTS(SELECT 1 FROM schedule_runs sr WHERE sr.chat_run_id=r.id)) AS interactive,m.id,m.name,m.transport,m.endpoint,m.command,m.allowed_tools,m.device_id,m.cwd,m.env_refs,m.config_source,r.owner_id,r.extension_manifest,v.organization_id,v.project_id,v.id AS conversation_id,c.ciphertext FROM chat_runs r JOIN conversations v ON v.id=r.conversation_id JOIN feature_flags f ON f.organization_id=v.organization_id AND f.flags->>'mcp'='true' JOIN mcp_connections m ON m.organization_id=v.organization_id AND r.mcp_connections ? m.id::text LEFT JOIN mcp_credentials c ON c.connection_id=m.id AND c.user_id=r.owner_id WHERE r.id=${runId}::uuid AND r.status='running' AND m.id=${connectionId}::uuid AND m.enabled`.execute(
       db,
     )
   ).rows[0];
@@ -112,6 +115,7 @@ export async function runMcp(
   expected: string,
   sessions?: Map<string, RemoteMcp>,
   stdioSessions?: Map<string, ExecutorStdioMcp>,
+  actionId?: string,
 ) {
   const m = await mcpConfig(db, runId, args.connectionId);
   if (
@@ -143,25 +147,69 @@ export async function runMcp(
       .execute(db)
       .catch(() => {});
   };
+  const ask: AskForInput | undefined =
+    actionId && m.interactive
+      ? (message, schema, questionSignal) =>
+          waitForToolInput(
+            db,
+            actionId,
+            m.name,
+            args.tool!,
+            message,
+            schema,
+            key,
+            questionSignal,
+            async () => {
+              if (m.project_id)
+                await projectAccess(
+                  db,
+                  { id: m.owner_id, organization_id: m.organization_id },
+                  m.project_id,
+                  "write",
+                );
+              if (!(await mcpConfig(db, runId, m.id)).interactive)
+                throw new ExecutionError("MCP_UNAVAILABLE");
+            },
+          )
+      : undefined;
   let result: any;
   if (m.transport === "stdio") {
     const executor = await getExecutor();
-    if (executor.mcpRequest)
+    const sessionId = runId + ":" + m.id + (m.interactive ? ":forms" : "");
+    if (executor.mcpRequest) {
       result = await stdioMcp(
         executor,
         m.command,
         method,
         params,
         signal,
-        runId + ":" + m.id,
+        sessionId,
         {
           source: m.config_source ?? undefined,
           cwd: m.cwd,
           envRefs: m.env_refs,
         },
       );
-    else {
-      const identity = JSON.stringify([runId, m.id, expected]);
+      // Each reply advances the same in-flight call in the desktop broker.
+      while (ask && result?.runozaForm?.ticket) {
+        const form = result.runozaForm;
+        const response = await ask(form.message, form.schema, signal);
+        result = await executor.mcpRequest(
+          sessionId,
+          m.command,
+          "form/answer",
+          { ticket: form.ticket, response },
+          signal,
+          {
+            source: m.config_source ?? undefined,
+            cwd: m.cwd,
+            envRefs: m.env_refs,
+          },
+        );
+      }
+      if (result?.runozaFormResult) result = result.runozaFormResult;
+    } else {
+      const identity = JSON.stringify([runId, m.id, expected, m.interactive]);
       let client = stdioSessions?.get(identity);
       if (!client) {
         client = new ExecutorStdioMcp(
@@ -170,6 +218,7 @@ export async function runMcp(
           signal,
           "/tmp/workspace",
           invalidateCatalog,
+          m.interactive,
         );
         stdioSessions?.set(identity, client);
       }
@@ -177,13 +226,19 @@ export async function runMcp(
         result =
           kind === "mcp_list"
             ? { tools: await client.list() }
-            : await client.call(args.tool!, args.arguments ?? {});
+            : await client.call(args.tool!, args.arguments ?? {}, ask);
       } finally {
         if (!stdioSessions) await client.close();
       }
     }
   } else {
-    const identity = JSON.stringify([m.id, m.owner_id, expected, token]);
+    const identity = JSON.stringify([
+      m.id,
+      m.owner_id,
+      expected,
+      token,
+      m.interactive,
+    ]);
     let client = sessions?.get(identity);
     if (!client) {
       const authorization = await mcpOAuthAuthorization(
@@ -201,13 +256,14 @@ export async function runMcp(
         Boolean(sessions),
         authorization,
         invalidateCatalog,
+        m.interactive,
       );
       sessions?.set(identity, client);
     }
     result =
       kind === "mcp_list"
         ? { tools: await client.list() }
-        : await client.call(args.tool!, args.arguments ?? {});
+        : await client.call(args.tool!, args.arguments ?? {}, ask);
   }
   if (result?._runozaCatalogChanged) {
     await sql`DELETE FROM mcp_tool_catalog WHERE connection_id=${m.id}::uuid AND owner_id=${m.owner_id}::uuid`.execute(

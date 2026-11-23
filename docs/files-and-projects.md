@@ -8,15 +8,23 @@ In the **Projects and Files** section, you can create a project, add instruction
 
 Start a personal conversation from the sidebar. Start a project conversation from its expanded group in the sidebar or from the project’s **Conversations** tab. Open **Attachments** to upload, view, or attach files to the next message. Once a conversation is created, its space does not change. Project participants see its conversations. Personal files and conversations are only available to the owner.
 
-Project instructions are recorded at the time of queuing the response and transmitted as a system prompt. Attachments are added to the context of the selected branch. Repeat uses the attachments of the original message; editing the message retains them. Project files are not added to each request automatically: the user selects the attachments explicitly. File text is data, not privileged instructions. The model can still make mistakes, including following the instructions inside the file; until step 5, tools and execution of commands are not available to it.
+Project instructions are recorded at the time of queuing the response and transmitted as a system prompt. Attachments are added to the context of the selected branch. Repeat uses the attachments of the original message; editing the message retains them. Choose individual attachments or enable project search for the message. The worker presents attachment text and retrieved passages to the model as untrusted content.
 
 ## Supported Files and Limitations
 
 - One file: from 1 byte to 64 MiB. Uploader quota: 1 GB and 1000 files, including unfinished and pending files, project files count against the uploader’s quota.
 - For model and secure text preview: UTF-8 without NUL, maximum 1 MiB and 60,000 characters, `txt md csv json jsonl yaml yml xml log ts tsx js jsx py go rs java c h cpp css html sql sh` extensions.
 - A maximum of 10 attachments and 60,000 characters of the contents of the attachments in a single message, the total context of the thread together with the instructions is limited to 120,000 characters.
-- Other formats are stored and downloaded. PDF/OCR, archive decompression, indexing/RAG, multimodal analysis, image generation and editing are not implemented.
+- Project search supports TXT, Markdown and PDFs with selectable text.
 - File artifacts are now stored files, and the agent's work will be automatically published with the performer in step 5.
+
+## Search project files from chat
+
+In **Project → Files**, open the actions menu for a ready TXT, Markdown or PDF file and choose **Make searchable**. Owners and editors can change this setting. Open a project chat, choose **+ → Search project files**, and send a question. The removable chip applies to that message. Retrying searches the current index again. Ordinary messages continue to use only their selected attachments.
+
+TXT and Markdown indexing uses the existing UTF-8 text preview (up to 60,000 characters). PDFs are queued for a separate parser process. The Files tab shows indexing progress, retry and the absence of a text layer. A PDF citation includes its page number. The worker limits extraction to 1,000 pages, one million text characters and 45 seconds per document. Scans require an existing OCR text layer. PostgreSQL ranks English and Russian passages and supplies up to five excerpts to the selected model. A numbered citation opens the file name, content digest, heading and passage with adjacent text. A removed source stops resolving immediately. Forks retain references to the original project files. The **Project document search** organization setting controls new indexing and retrieval.
+
+Choose **Create collection** in the project’s Files tab to name a selection of files. Owners and editors can edit membership, rename or delete a collection. In the composer, enable search and choose the collection or all indexed files. A retry searches the original scope using its current membership. Deleting a collection leaves its files intact and prevents retries from expanding silently to the whole project.
 
 ## Storage and life cycle
 
@@ -44,4 +52,4 @@ Local start: Compose with `deploy/compose/test.yaml`, `runoza-stage4-tests` proj
 
 ## Navigation and forms
 
-The Projects and Files section is located in the side menu (on the narrow screen, on the mobile menu). Within the project, conversations, instructions, files and participants are separated by tabs; the first one opens the conversation tab. Instructions are entered into a multi-line field with explanation and example in the hint. Project files do not automatically enter context: they must be selected in the chat attachments. The Select button confirms the choice, the **Cancel** button leaves the previous choice. Uploading saves the file to storage regardless of whether you confirm the selection.
+The Projects and Files section is located in the side menu (on the narrow screen, on the mobile menu). Within the project, conversations, instructions, files and participants are separated by tabs; the first one opens the conversation tab. Instructions are entered into a multi-line field with explanation and example in the hint. The composer offers separate actions for attaching a file and searching indexed project files. The Select button confirms the choice, the **Cancel** button leaves the previous choice. Uploading saves the file to storage regardless of whether you confirm the selection.

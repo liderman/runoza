@@ -8,7 +8,9 @@ import Fastify from "fastify";
 import { createDatabase, migrate, sql } from "@runoza/db";
 import { newSession } from "@runoza/auth";
 import { createStorage } from "@runoza/storage";
-import { cleanupFiles } from "@runoza/resources";
+import { knowledgeCases, unanswered } from "./knowledge-cases.ts";
+import { policyPdf } from "./pdf-fixture.ts";
+import { indexNextPdf, cleanupFiles, selectSources } from "@runoza/resources";
 import { executeRun, runEvent } from "@runoza/chat";
 import { createApp } from "../../apps/server/src/app.ts";
 const url = process.env.TEST_DATABASE_URL;
@@ -437,6 +439,193 @@ test("projects, proxy file transfers and attachments", async (t) => {
           { ...body, requestId: randomUUID(), fileIds: [privateFile] },
           400,
         );
+      },
+    );
+    await t.test(
+      "project search delivers scoped evidence and makes revoked sources unavailable",
+      async () => {
+        const file = await upload(
+          owner,
+          "handbook.md",
+          Buffer.from(
+            "# Claims\nA reimbursement claim must arrive within thirty days.\n\n# Отпуск\nЗаявления на отпуск принимаются за месяц.",
+          ),
+          project,
+        );
+        const index = "/projects/" + project + "/files/" + file.id + "/search";
+        await call(viewer, index, "PUT", { enabled: true }, 403);
+        await call(editor, index, "PUT", { enabled: true });
+        await call(editor, index, "PUT", { enabled: true });
+        const run = await call(
+          editor,
+          "/conversations/" + chat + "/runs",
+          "POST",
+          {
+            requestId: randomUUID(),
+            providerId: provider,
+            model: "fixture",
+            content: "Срок заявления на отпуск?",
+            searchProject: true,
+          },
+        );
+        await executeRun(db, key, run.id);
+        assert.match(
+          JSON.stringify(context),
+          /Заявления на отпуск принимаются/,
+        );
+        const evidence =
+          "/conversations/" +
+          chat +
+          "/messages/" +
+          run.assistant_message_id +
+          "/sources/1";
+        assert.match((await call(viewer, evidence)).body, /Заявления/);
+        await call(outsider, evidence, "GET", undefined, 404);
+        await call(editor, index, "PUT", { enabled: false });
+        await call(viewer, evidence, "GET", undefined, 404);
+      },
+    );
+    await t.test(
+      "PDF pages, interrupted extraction, collection scope, permissions and retry after collection deletion",
+      async () => {
+        const search = (id: string) =>
+          "/projects/" + project + "/files/" + id + "/search";
+        const collections = "/projects/" + project + "/collections";
+        const f = await upload(
+            owner,
+            "terms.pdf",
+            policyPdf("Lobster claims close after thirty days."),
+            project,
+          ),
+          other = await upload(
+            owner,
+            "terms.pdf",
+            policyPdf("Lobster daily shipping schedule."),
+            project,
+          );
+        const silent = await upload(
+          owner,
+          "scanned.pdf",
+          policyPdf(""),
+          project,
+        );
+        for (const row of [f, other, silent])
+          await call(editor, search(row.id), "PUT", { enabled: true });
+        await sql`UPDATE files SET pdf_state='indexing',pdf_lease_until=now()-interval '1 second' WHERE id=${f.id}::uuid`.execute(
+          db,
+        );
+        for (let n = 0; n < 3; n++)
+          assert.equal(
+            await indexNextPdf(db, storage, AbortSignal.timeout(20000)),
+            true,
+          );
+        assert.equal(
+          (
+            await sql<{
+              pdf_state: string;
+            }>`SELECT pdf_state FROM files WHERE id=${silent.id}::uuid`.execute(
+              db,
+            )
+          ).rows[0]?.pdf_state,
+          "unavailable",
+        );
+        const cfg = { name: "Claims", fileIds: [f.id] };
+        await call(viewer, collections, "POST", cfg, 403);
+        const coll = await call(editor, collections, "POST", cfg);
+        await call(editor, collections, "POST", cfg, 409);
+        await call(
+          editor,
+          collections + "/" + coll.id,
+          "PUT",
+          { ...cfg, fileIds: [privateFile] },
+          400,
+        );
+        const run = await call(
+          editor,
+          "/conversations/" + chat + "/runs",
+          "POST",
+          {
+            requestId: randomUUID(),
+            providerId: provider,
+            model: "fixture",
+            content: "Lobster",
+            searchProject: true,
+            collectionId: coll.id,
+          },
+        );
+        await executeRun(db, key, run.id);
+        const source =
+          "/conversations/" +
+          chat +
+          "/messages/" +
+          run.assistant_message_id +
+          "/sources/";
+        assert.equal((await call(viewer, source + "1")).page, 2);
+        await call(viewer, source + "2", "GET", undefined, 404);
+        await call(editor, collections + "/" + coll.id, "DELETE");
+        await call(
+          editor,
+          "/conversations/" + chat + "/runs",
+          "POST",
+          {
+            requestId: randomUUID(),
+            providerId: provider,
+            model: "fixture",
+            retryMessageId: run.user_message_id,
+          },
+          404,
+        );
+        await call(editor, search(f.id), "PUT", { enabled: false });
+        await call(viewer, source + "1", "GET", undefined, 404);
+      },
+    );
+    await t.test(
+      "bilingual project search finds the expected passage in the top five",
+      async (t) => {
+        const scope = (
+          await call(owner, "/projects", "POST", { name: "Retrieval fixture" })
+        ).id;
+        const conversation = (
+          await call(owner, "/conversations", "POST", {
+            title: "Quality",
+            projectId: scope,
+          })
+        ).id;
+        for (const [index, row] of knowledgeCases.entries()) {
+          const file = await upload(
+            owner,
+            "policy-" + index + ".txt",
+            Buffer.from(row[0] + "\n\n" + row[1]),
+            scope,
+          );
+          await call(
+            owner,
+            "/projects/" + scope + "/files/" + file.id + "/search",
+            "PUT",
+            { enabled: true },
+          );
+        }
+        async function search(query: string) {
+          const message = randomUUID();
+          await sql`INSERT INTO messages(id,conversation_id,role,content) VALUES(${message}::uuid,${conversation}::uuid,'assistant','')`.execute(
+            db,
+          );
+          await selectSources(db, scope, query, message);
+          return (
+            await sql<{
+              body: string;
+            }>`SELECT p.body FROM message_sources s JOIN file_passages p ON p.id=s.passage_id WHERE s.message_id=${message}::uuid`.execute(
+              db,
+            )
+          ).rows.map((r) => r.body);
+        }
+        let hits = 0;
+        for (const [en, ru, ...questions] of knowledgeCases)
+          for (const [i, q] of questions.entries())
+            if ((await search(q)).includes(i < 2 ? en : ru)) hits++;
+        t.diagnostic(hits + "/36 expected passages in top five");
+        assert.ok(hits >= 31);
+        for (const q of unanswered) assert.deepEqual(await search(q), []);
       },
     );
     await t.test(

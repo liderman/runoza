@@ -1,3 +1,5 @@
+import { ProjectCollections } from "./ProjectCollections.tsx";
+import { useCapabilities } from "./capabilities.tsx";
 import { LoadingPanel } from "@runoza/ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDirtyGuard, useNavigationGuard } from "./NavigationGuard.tsx";
@@ -48,6 +50,7 @@ export function FilesPanel({
   selected?: string[];
   onSelect?: (ids: string[]) => void;
 }) {
+  const features = useCapabilities(api);
   const u = uxText(locale);
   const t = resourceText(locale),
     [busy, setBusy] = useState(false),
@@ -71,7 +74,16 @@ export function FilesPanel({
         { signal },
       )
     ).files;
-  const fileQuery = useQuery({ queryKey, queryFn });
+  const fileQuery = useQuery({
+    queryKey,
+    queryFn,
+    refetchInterval: (q) =>
+      q.state.data?.some(
+        (f) => f.pdfState === "queued" || f.pdfState === "indexing",
+      )
+        ? 1500
+        : false,
+  });
   const files = fileQuery.data ?? [];
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey, refetchType: "none" });
@@ -183,6 +195,15 @@ export function FilesPanel({
           </Button>
         </Flex>
       )}
+      {projectId && !onSelect && features.flags.projectSearch !== false && (
+        <ProjectCollections
+          api={api}
+          project={projectId}
+          files={files}
+          locale={locale}
+          readOnly={readOnly}
+        />
+      )}
       {loading ? (
         <LoadingPanel label={locale === "ru" ? "Загрузка" : "Loading"} />
       ) : (
@@ -232,6 +253,25 @@ export function FilesPanel({
               )}
             </>
           )}
+          {f.pdfState && (
+            <Text color="secondary">
+              {
+                {
+                  queued: locale === "ru" ? "В очереди" : "Queued",
+                  indexing: locale === "ru" ? "Индексируется" : "Indexing",
+                  unavailable:
+                    locale === "ru" ? "Текст не найден" : "No searchable text",
+                  failed:
+                    locale === "ru" ? "Ошибка индексации" : "Indexing failed",
+                }[f.pdfState]
+              }
+            </Text>
+          )}
+          {f.searchable && (
+            <Text color="secondary">
+              {locale === "ru" ? "В поиске проекта" : "Searchable in project"}
+            </Text>
+          )}
           <Menu
             trigger={
               <MenuTrigger
@@ -260,6 +300,46 @@ export function FilesPanel({
                 {t("preview")}
               </MenuItem>
             )}
+            {!readOnly &&
+              projectId &&
+              (features.flags.projectSearch !== false || f.searchable) &&
+              f.status === "ready" &&
+              ((f.readable && /\.(md|txt)$/i.test(f.name)) ||
+                /\.pdf$/i.test(f.name)) && (
+                <MenuItem
+                  disabled={busy}
+                  onClick={() =>
+                    void action(async () => {
+                      await api.request(
+                        "/projects/" + projectId + "/files/" + f.id + "/search",
+                        "PUT",
+                        {
+                          enabled: !(
+                            f.searchable ||
+                            f.pdfState === "queued" ||
+                            f.pdfState === "indexing"
+                          ),
+                        },
+                      );
+                      await refresh();
+                    })
+                  }
+                >
+                  {f.pdfState === "failed" || f.pdfState === "unavailable"
+                    ? locale === "ru"
+                      ? "Повторить индексацию"
+                      : "Retry indexing"
+                    : f.searchable ||
+                        f.pdfState === "queued" ||
+                        f.pdfState === "indexing"
+                      ? locale === "ru"
+                        ? "Исключить из поиска"
+                        : "Remove from project search"
+                      : locale === "ru"
+                        ? "Включить в поиск проекта"
+                        : "Make searchable"}
+                </MenuItem>
+              )}
             {!readOnly && (
               <MenuItem
                 theme="danger"

@@ -121,6 +121,10 @@ body {
   overflow-wrap: anywhere;
   min-width: 0;
 }
+.source-passage mark {
+  background: var(--g-color-base-selection);
+  color: var(--g-color-text-primary);
+}
 .resource-preview {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -346,6 +350,7 @@ body:has([role="listbox"], [role="menu"], [role="dialog"]) .desktop-titlebar {
   background: var(--g-color-text-secondary);
   animation: none;
 }
+.chat-activity-dot--waiting_input,
 .chat-activity-dot--waiting_approval {
   background: var(--g-color-text-warning);
 }

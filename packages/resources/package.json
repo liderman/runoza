@@ -16,6 +16,7 @@
     "@runoza/db": "0.0.0",
     "@runoza/storage": "0.0.0",
     "fflate": "0.8.3",
+    "pdfjs-dist": "6.5.438",
     "smol-toml": "1.9.1",
     "yaml": "2.9.1"
   }

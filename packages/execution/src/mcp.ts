@@ -77,6 +77,7 @@ export function pinnedMcpFetch(
   endpoint: string,
   lifetime: AbortSignal,
   allowInternal?: string,
+  timeoutMs = 30000,
 ): typeof fetch {
   return async (input, options) => {
     const request = new Request(input, options);
@@ -86,7 +87,7 @@ export function pinnedMcpFetch(
     const signal = AbortSignal.any([
       lifetime,
       request.signal,
-      AbortSignal.timeout(30000),
+      AbortSignal.timeout(timeoutMs),
     ]);
     const body = ["GET", "HEAD"].includes(request.method)
       ? undefined
@@ -167,7 +168,16 @@ export function pinnedMcpFetch(
     });
   };
 }
+export type AskForInput = (
+  message: string,
+  schema: unknown,
+  signal: AbortSignal,
+) => Promise<{
+  action: "accept" | "decline" | "cancel";
+  content?: Record<string, string | number | boolean>;
+}>;
 export class RemoteMcp {
+  private ask?: AskForInput;
   private client: Client;
   private transport: StreamableHTTPClientTransport;
   private connecting?: Promise<void>;
@@ -179,10 +189,12 @@ export class RemoteMcp {
     private persistent = false,
     authProvider?: AuthProvider,
     onToolsChanged?: () => void,
+    interactive = false,
   ) {
     this.client = new Client(
       { name: "Runoza", version: "0.0.0" },
       {
+        capabilities: interactive ? { elicitation: { form: {} } } : {},
         listMaxPages: 64,
         listChanged: {
           tools: {
@@ -193,9 +205,27 @@ export class RemoteMcp {
         },
       },
     );
+    if (interactive)
+      this.client.setRequestHandler(
+        "elicitation/create",
+        async (request, ctx) => {
+          if (!this.ask || request.params.mode === "url")
+            return { action: "cancel" };
+          return this.ask(
+            request.params.message,
+            request.params.requestedSchema,
+            ctx.mcpReq.signal,
+          );
+        },
+      );
     this.transport = new StreamableHTTPClientTransport(new URL(endpoint), {
       authProvider,
-      fetch: pinnedMcpFetch(endpoint, signal, allowInternal),
+      fetch: pinnedMcpFetch(
+        endpoint,
+        signal,
+        allowInternal,
+        interactive ? 630000 : 30000,
+      ),
       requestInit: {
         redirect: "error",
         ...(token ? { headers: { authorization: "Bearer " + token } } : {}),
@@ -234,14 +264,26 @@ export class RemoteMcp {
       if (!this.persistent) await this.close();
     }
   }
-  async call(name: string, args: unknown) {
+  async call(name: string, args: unknown, ask?: AskForInput) {
+    if (this.ask) throw new McpError("MCP_SESSION_BUSY");
+    this.ask = ask;
+    const lifetime = new AbortController();
+    if (ask)
+      this.ask = (message, schema, signal) =>
+        ask(
+          message,
+          schema,
+          AbortSignal.any([signal, lifetime.signal, this.signal]),
+        );
     try {
       await this.connect();
       return await this.client.callTool(
         { name, arguments: args as Record<string, unknown> },
-        { signal: this.signal },
+        { signal: this.signal, ...(ask ? { timeout: 630000 } : {}) },
       );
     } finally {
+      lifetime.abort();
+      this.ask = undefined;
       if (!this.persistent) await this.close();
     }
   }

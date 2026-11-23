@@ -58,7 +58,13 @@ export async function desktopLease(
             db,
           )
         ).rows[0];
-        if (j?.status === "completed") return j.result;
+        if (j?.status === "completed") {
+          if (operation === "mcp.request")
+            await sql`UPDATE desktop_jobs SET result=NULL WHERE id=${id}::uuid`.execute(
+              db,
+            );
+          return j.result;
+        }
         if (!j || ["failed", "unknown", "cancelled"].includes(j.status))
           throw new ExecutionError(j?.error_code ?? "EXECUTION_UNKNOWN");
         await delay(100, undefined, { signal });

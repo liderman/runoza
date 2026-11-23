@@ -23,6 +23,8 @@ export interface StoredFile {
   upload_token: string | null;
   text_content: string | null;
   sha256: string | null;
+  searchable?: boolean;
+  pdf_state?: "queued" | "indexing" | "unavailable" | "failed" | null;
 }
 export async function projectAccess(
   db: Database,
@@ -69,6 +71,8 @@ export function publicFile(f: StoredFile) {
     mediaType: f.media_type,
     status: f.status,
     projectId: f.project_id,
+    searchable: f.searchable ?? false,
+    pdfState: f.pdf_state ?? null,
     readable: f.text_content !== null,
     sha256: f.sha256,
   };
@@ -166,6 +170,13 @@ export async function attachmentText(
   }
   return text;
 }
+export { indexNextPdf, startPdfIndexer } from "./pdf-index.ts";
+export {
+  requireProjectSearch,
+  indexProjectFile,
+  selectSources,
+  sourceContext,
+} from "./knowledge.ts";
 export { saveArtifact } from "./artifacts.ts";
 export { skillVersion, listSkills } from "./skills.ts";
 

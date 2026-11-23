@@ -1,6 +1,9 @@
 import { rememberDecision, type GrantScope } from "@runoza/permissions";
 import { registerPermissions } from "./permissions.ts";
 import {
+  validToolAnswer,
+  type ToolQuestion,
+  type ToolInputResponse,
   providerConnectionJsonSchema,
   type ProviderConnectionInput,
 } from "@runoza/contracts";
@@ -176,7 +179,10 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
                 }),
               )
             : null;
-          await sql`INSERT INTO messages(id,conversation_id,parent_id,role,content,reasoning,parts,created_at) VALUES (${id}::uuid,${conversation.id}::uuid,${parent}::uuid,${m.role},${m.content},${m.reasoning ?? ""},${parts === null ? null : JSON.stringify(parts)}::jsonb,${m.created_at})`.execute(
+          await sql`INSERT INTO messages(id,conversation_id,parent_id,role,content,reasoning,parts,created_at,search_project,search_collection) VALUES (${id}::uuid,${conversation.id}::uuid,${parent}::uuid,${m.role},${m.content},${m.reasoning ?? ""},${parts === null ? null : JSON.stringify(parts)}::jsonb,${m.created_at},${m.search_project ?? false},${m.search_collection ?? null}::uuid)`.execute(
+            trx,
+          );
+          await sql`INSERT INTO message_sources(message_id,ordinal,passage_id) SELECT ${id}::uuid,ordinal,passage_id FROM message_sources WHERE message_id=${m.id}::uuid`.execute(
             trx,
           );
           await sql`INSERT INTO message_attachments(message_id,file_id) SELECT ${id}::uuid,file_id FROM message_attachments WHERE message_id=${m.id}::uuid`.execute(
@@ -330,7 +336,7 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
     const u = await ctx.identity(req);
     return {
       conversations: (
-        await sql`SELECT c.*,(SELECT CASE WHEN r.status='queued' THEN 'queued' ELSE COALESCE(r.code_state,'running') END FROM chat_runs r WHERE r.conversation_id=c.id AND r.status IN ('queued','running') LIMIT 1) AS active_state FROM conversations c LEFT JOIN projects p ON p.id=c.project_id LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=${u.id}::uuid WHERE c.organization_id=${u.organization_id}::uuid AND ((c.project_id IS NULL AND c.owner_id=${u.id}::uuid) OR p.owner_id=${u.id}::uuid OR m.user_id IS NOT NULL) ORDER BY c.updated_at DESC LIMIT 200`.execute(
+        await sql`SELECT c.*,(SELECT CASE WHEN r.status='queued' THEN 'queued' WHEN r.owner_id=${u.id}::uuid AND EXISTS(SELECT 1 FROM code_actions a JOIN mcp_questions q ON q.action_id=a.id WHERE a.run_id=r.id AND a.status='running' AND q.response IS NULL AND q.expires_at>now()) THEN 'waiting_input' ELSE COALESCE(r.code_state,'running') END FROM chat_runs r WHERE r.conversation_id=c.id AND r.status IN ('queued','running') LIMIT 1) AS active_state FROM conversations c LEFT JOIN projects p ON p.id=c.project_id LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=${u.id}::uuid WHERE c.organization_id=${u.organization_id}::uuid AND ((c.project_id IS NULL AND c.owner_id=${u.id}::uuid) OR p.owner_id=${u.id}::uuid OR m.user_id IS NOT NULL) ORDER BY c.updated_at DESC LIMIT 200`.execute(
           db,
         )
       ).rows,
@@ -592,6 +598,8 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
       content?: string;
       parentId?: string | null;
       retryMessageId?: string;
+      searchProject?: boolean;
+      collectionId?: string;
       fileIds?: string[];
       skillVersionIds?: string[];
       mcpConnectionIds?: string[];
@@ -636,6 +644,8 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
               maxItems: 256,
               uniqueItems: true,
             },
+            searchProject: { type: "boolean" },
+            collectionId: uuid,
             fileIds: {
               type: "array",
               items: uuid,
@@ -683,6 +693,14 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
       return {
         mode: r.mode,
         canManage: owner.owner_id === u.id,
+        questions:
+          owner.owner_id === u.id && r.status === "running"
+            ? (
+                await sql<ToolQuestion>`SELECT q.id,q.action_id AS "actionId",q.server,q.tool,q.message,q.schema FROM mcp_questions q JOIN code_actions a ON a.id=q.action_id WHERE a.run_id=${r.id}::uuid AND a.status='running' AND q.expires_at>now() AND q.response IS NULL AND EXISTS (SELECT 1 FROM feature_flags f WHERE f.organization_id=${u.organization_id}::uuid AND f.flags->>'mcp'='true' AND f.flags->>'mcpForms' IS DISTINCT FROM 'false') AND EXISTS(SELECT 1 FROM conversations c LEFT JOIN projects p ON p.id=c.project_id WHERE c.id=${r.conversation_id}::uuid AND (c.project_id IS NULL OR p.owner_id=${u.id}::uuid OR EXISTS (SELECT 1 FROM project_members m WHERE m.project_id=c.project_id AND m.user_id=${u.id}::uuid AND m.role='editor'))) ORDER BY q.expires_at`.execute(
+                  db,
+                )
+              ).rows
+            : [],
         state: r.code_state,
         canApprove: owner.owner_id === u.id && r.status === "running",
         localWorkspace: Boolean(
@@ -698,6 +716,50 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
           )
         ).rows,
       };
+    },
+  );
+  app.post<{
+    Params: { id: string; question: string };
+    Body: ToolInputResponse;
+  }>(
+    "/api/v1/runs/:id/questions/:question",
+    {
+      schema: {
+        params: object({ id: uuid, question: uuid }),
+        body: object(
+          {
+            action: { enum: ["accept", "cancel", "decline"] },
+            content: {
+              type: "object",
+              maxProperties: 16,
+              additionalProperties: true,
+            },
+          },
+          ["action"],
+        ),
+      },
+    },
+    async (req) => {
+      const u = await ctx.identity(req);
+      return db.transaction().execute(async (trx) => {
+        const row = (
+          await sql<{
+            id: string;
+            schema: ToolQuestion["schema"];
+            conversation_id: string;
+          }>`SELECT q.id,q.schema,r.conversation_id FROM mcp_questions q JOIN code_actions a ON a.id=q.action_id JOIN chat_runs r ON r.id=a.run_id WHERE q.id=${req.params.question}::uuid AND r.id=${req.params.id}::uuid AND r.owner_id=${u.id}::uuid AND r.status='running' AND a.status='running' AND q.expires_at>now() AND q.response IS NULL AND EXISTS(SELECT 1 FROM feature_flags f WHERE f.organization_id=${u.organization_id}::uuid AND f.flags->>'mcp'='true' AND f.flags->>'mcpForms' IS DISTINCT FROM 'false') FOR UPDATE OF q`.execute(
+            trx,
+          )
+        ).rows[0];
+        if (!row) fail(404, "NOT_FOUND");
+        await owned(trx, u, row.conversation_id, true);
+        if (!validToolAnswer(row.schema, req.body))
+          fail(400, "INVALID_REQUEST");
+        await sql`UPDATE mcp_questions SET response=${box().seal(JSON.stringify(req.body), "mcp-question:" + row.id)} WHERE id=${row.id}::uuid`.execute(
+          trx,
+        );
+        return { ok: true };
+      });
     },
   );
   app.post<{

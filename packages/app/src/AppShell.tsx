@@ -155,38 +155,18 @@ export function AppShell({
       icon: Comments,
     },
   ];
+  const activityLabel = (state: string) =>
+    ({
+      queued: ru ? "В очереди" : "Queued",
+      waiting_input: ru ? "Нужен ваш ответ" : "Needs your input",
+      waiting_approval: ru ? "Ждёт разрешения" : "Awaiting approval",
+    })[state] ?? (ru ? "Выполняется" : "Working");
   const activity = (c: Conversation) =>
     c.active_state ? (
-      <Tooltip
-        content={
-          c.active_state === "queued"
-            ? ru
-              ? "В очереди"
-              : "Queued"
-            : c.active_state === "waiting_approval"
-              ? ru
-                ? "Ждёт разрешения"
-                : "Awaiting approval"
-              : ru
-                ? "Выполняется"
-                : "Working"
-        }
-      >
+      <Tooltip content={activityLabel(c.active_state)}>
         <span
           role="img"
-          aria-label={
-            c.active_state === "queued"
-              ? ru
-                ? "В очереди"
-                : "Queued"
-              : c.active_state === "waiting_approval"
-                ? ru
-                  ? "Ждёт разрешения"
-                  : "Awaiting approval"
-                : ru
-                  ? "Выполняется"
-                  : "Working"
-          }
+          aria-label={activityLabel(c.active_state)}
           className={`chat-activity-dot chat-activity-dot--${c.active_state}`}
         />
       </Tooltip>

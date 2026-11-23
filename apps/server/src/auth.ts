@@ -290,7 +290,10 @@ export async function registerAuth(
         db,
       )
     ).rows[0];
-    return { ...features, runtime };
+    return {
+      flags: { projectSearch: true, mcpForms: true, ...features?.flags },
+      runtime,
+    };
   });
   app.get("/api/v1/admin/users", async (req) => {
     const u = await context.identity(req, true);
@@ -408,7 +411,7 @@ export async function registerAuth(
     async (req) => {
       const u = await context.identity(req, true);
       await db.transaction().execute(async (trx) => {
-        await sql`UPDATE feature_flags SET flags=${JSON.stringify(req.body)}::jsonb WHERE organization_id=${u.organization_id}::uuid`.execute(
+        await sql`UPDATE feature_flags SET flags=flags || ${JSON.stringify(req.body)}::jsonb WHERE organization_id=${u.organization_id}::uuid`.execute(
           trx,
         );
         await audit(trx, u, "features.updated", u.organization_id);
