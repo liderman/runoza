@@ -57,7 +57,7 @@ export async function installResource(
   bytes: Buffer,
   expectedHash: string | null,
   signal: AbortSignal,
-  workspaceRoot = "/tmp/workspace",
+  workspaceRoot = executor.workspaceRoot ?? "/tmp/workspace",
 ) {
   workspacePath(path);
   if (bytes.length > 10485760) throw new ExecutionError("FILE_SIZE");

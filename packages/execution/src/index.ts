@@ -1,3 +1,4 @@
+import WebSocket from "ws";
 import { inSpan, failure } from "@runoza/telemetry";
 import { desktopScope, desktopLease } from "./desktop.ts";
 export { desktopScope, desktopLease } from "./desktop.ts";
@@ -22,6 +23,7 @@ export interface TerminalConnection {
   disconnect(): void;
 }
 export interface Executor {
+  readonly workspaceRoot?: string;
   installBytes?(
     path: string,
     bytes: Buffer,
@@ -86,6 +88,9 @@ export class CommandOutcomeUnknown extends ExecutionError {
   }
 }
 export interface TerminalConfig {
+  workspaceRoot?: string;
+  userId?: string;
+  sessionId?: string;
   id: string;
   url: string;
   token: string;
@@ -125,11 +130,23 @@ export class OpenTerminalAdapter implements Executor {
     private config: TerminalConfig,
     private check: () => Promise<void>,
   ) {}
+  get workspaceRoot() {
+    return this.config.workspaceRoot ?? "/tmp/workspace";
+  }
+  private scopeHeaders() {
+    return {
+      ...(this.config.userId ? { "X-User-Id": this.config.userId } : {}),
+      ...(this.config.sessionId
+        ? { "X-Session-Id": this.config.sessionId }
+        : {}),
+    };
+  }
   async api(path: string, method: string, body: unknown, signal: AbortSignal) {
     const r = await fetch(this.config.url + path, {
       method,
       headers: {
         authorization: "Bearer " + this.config.token,
+        ...this.scopeHeaders(),
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -184,6 +201,13 @@ export class OpenTerminalAdapter implements Executor {
   }
   async openTerminal(signal: AbortSignal) {
     await this.check();
+    if (this.config.workspaceRoot)
+      await this.api(
+        "/files/cwd",
+        "POST",
+        { path: this.workspaceRoot },
+        signal,
+      );
     return (await this.api("/api/terminals", "POST", undefined, signal)).id;
   }
   async closeTerminal(id: string) {
@@ -207,6 +231,7 @@ export class OpenTerminalAdapter implements Executor {
       this.config.url.replace(/^http/, "ws") +
         "/api/terminals/" +
         encodeURIComponent(id),
+      { headers: this.scopeHeaders() },
     );
     ws.binaryType = "arraybuffer";
     const decoder = new TextDecoder();
@@ -284,7 +309,7 @@ export class OpenTerminalAdapter implements Executor {
       let r = await this.api(
         "/execute?wait=0",
         "POST",
-        { command, cwd: "/tmp" },
+        { command, cwd: this.config.workspaceRoot ?? "/tmp" },
         limit,
       );
       id = r.id;
@@ -330,7 +355,7 @@ export class OpenTerminalAdapter implements Executor {
 }
 export class PostgresEnvironmentProvider implements EnvironmentProvider {
   constructor(
-    private db: Database,
+    protected db: Database,
     private configs: TerminalConfig[],
     private factory: (
       c: TerminalConfig,
@@ -338,7 +363,10 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
     ) => Executor = (c, check) => new OpenTerminalAdapter(c, check),
     private encryptionKey = process.env.EXECUTOR_SECRETS_KEY,
   ) {}
-  async configFor(id: string) {
+  protected hasConfiguration() {
+    return this.configs.length > 0;
+  }
+  async configFor(id: string): Promise<TerminalConfig> {
     const c = this.configs.find((c) => c.id === id);
     if (!c) throw new ExecutionError("CODE_NOT_CONFIGURED");
     const row = (
@@ -402,10 +430,11 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
       executor: this.factory(c, check),
       check,
       generation: c.generation,
+      cwd: c.workspaceRoot,
     };
   }
   async sweep() {
-    await sql`UPDATE execution_environments e SET state='quarantine',conversation_id=NULL,updated_at=now() WHERE (state IN ('inspection','ready') AND conversation_id IS NOT NULL AND expires_at<now()) OR (state='leased' AND (expires_at<now() OR NOT EXISTS(SELECT 1 FROM chat_runs r WHERE r.id=e.run_id AND r.status='running' AND r.heartbeat_at>now()-interval '60 seconds'))) OR (conversation_id IS NULL AND state IN ('leased','inspection'))`.execute(
+    await sql`UPDATE execution_environments e SET state='quarantine',conversation_id=NULL,updated_at=now() WHERE backend='pool' AND ((state IN ('inspection','ready') AND conversation_id IS NOT NULL AND expires_at<now()) OR (state='leased' AND (expires_at<now() OR NOT EXISTS(SELECT 1 FROM chat_runs r WHERE r.id=e.run_id AND r.status='running' AND r.heartbeat_at>now()-interval '60 seconds'))) OR (conversation_id IS NULL AND state IN ('leased','inspection')))`.execute(
       this.db,
     );
     await sql`UPDATE code_actions a SET status=CASE WHEN a.status='running' THEN 'unknown' ELSE 'cancelled' END WHERE a.status IN ('pending','approved','running') AND NOT EXISTS(SELECT 1 FROM chat_runs r WHERE r.id=a.run_id AND r.status IN ('queued','running'))`.execute(
@@ -423,6 +452,20 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
     if (!r) throw new ExecutionError("LEASE_LOST");
     return this.acquireWorkspace(r.conversation_id, runId, signal);
   }
+  protected async prepareWorkspace(
+    _conversationId: string,
+    _signal: AbortSignal,
+  ) {}
+  protected async releaseWorkspace(
+    id: string,
+    generation: string,
+    fence: string,
+    retain: boolean,
+  ) {
+    await sql`UPDATE execution_environments SET state=${retain ? "inspection" : "quarantine"},conversation_id=CASE WHEN ${retain} OR backend='shared' THEN conversation_id ELSE NULL END,run_id=NULL,expires_at=now()+interval '10 minutes',updated_at=now() WHERE id=${id} AND generation=${generation}::uuid AND fence=${fence}::uuid AND state IN ('leased','inspection')`.execute(
+      this.db,
+    );
+  }
   async acquireWorkspace(
     conversationId: string,
     runId: string | null,
@@ -430,7 +473,8 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
   ): Promise<EnvironmentLease> {
     if (await desktopScope(this.db, conversationId))
       return desktopLease(this.db, conversationId);
-    if (!this.configs.length) throw new ExecutionError("CODE_NOT_CONFIGURED");
+    if (!this.hasConfiguration())
+      throw new ExecutionError("CODE_NOT_CONFIGURED");
     await sql`INSERT INTO conversation_workspaces(conversation_id) VALUES (${conversationId}::uuid) ON CONFLICT DO NOTHING`.execute(
       this.db,
     );
@@ -438,6 +482,7 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
     while (Date.now() < until) {
       signal.throwIfAborted();
       await this.sweep();
+      await this.prepareWorkspace(conversationId, signal);
       const existing = (
         await sql<{
           id: string;
@@ -471,11 +516,10 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
           };
           return {
             executor: this.factory(c, check),
+            cwd: c.workspaceRoot,
             check,
             release: async (retain = true) => {
-              await sql`UPDATE execution_environments SET state=${retain ? "inspection" : "quarantine"},conversation_id=CASE WHEN ${retain} THEN conversation_id ELSE NULL END,run_id=NULL,expires_at=now()+interval '10 minutes',updated_at=now() WHERE id=${c.id} AND generation=${c.generation}::uuid AND fence=${fence}::uuid AND state IN ('leased','inspection')`.execute(
-                this.db,
-              );
+              await this.releaseWorkspace(c.id, c.generation, fence, retain);
             },
           };
         }
@@ -493,7 +537,7 @@ export class PostgresEnvironmentProvider implements EnvironmentProvider {
             ).rows.length
           )
             return;
-          await sql`UPDATE execution_environments SET conversation_id=${conversationId}::uuid,state='quarantine',updated_at=now() WHERE id=(SELECT id FROM execution_environments WHERE state='ready' AND conversation_id IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)`.execute(
+          await sql`UPDATE execution_environments SET conversation_id=${conversationId}::uuid,state='quarantine',updated_at=now() WHERE id=(SELECT id FROM execution_environments WHERE backend='pool' AND state='ready' AND conversation_id IS NULL ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1)`.execute(
             trx,
           );
         });

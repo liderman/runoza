@@ -146,8 +146,17 @@ try {
     (m) => m.Destination === "/data" && m.Type === "volume",
   )?.Name;
   if (!objectVolume) throw Error("RustFS must use a named volume");
+  const terminalVolumes = containers
+    .filter(
+      (c) =>
+        c.Config.Labels["com.docker.compose.service"] === "terminal" ||
+        c.Config.Labels["com.docker.compose.service"] === "terminal-init",
+    )
+    .flatMap((c) =>
+      c.Mounts.filter((m) => m.Type === "volume").map((m) => m.Name),
+    );
   for (const [index, name] of [
-    ...new Set([objectVolume, ...names]),
+    ...new Set([objectVolume, ...names, ...terminalVolumes]),
   ].entries()) {
     const file = `volume-${index}.tar`;
     await stream(

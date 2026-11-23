@@ -19,6 +19,14 @@ jobs:
           POSTGRES_DB: runoza
         ports: ["55449:5432"]
         options: --health-cmd="pg_isready -U runoza -d runoza" --health-interval=5s --health-timeout=3s --health-retries=20
+      terminal:
+        options: --user 0:0
+        image: ghcr.io/open-webui/open-terminal:0.17.22@sha256:56c5c185a02cb91c97de38f6c55720353306d2780b9c6fe2256f401d6d48b982
+        env:
+          OPEN_TERMINAL_API_KEY: ci-terminal-disposable-only-key-0000000000
+          OPEN_TERMINAL_MULTI_USER: "true"
+          OPEN_TERMINAL_USER_PREFIX: ""
+        ports: ["58059:8000"]
       rustfs:
         image: rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
         env:
@@ -39,6 +47,8 @@ jobs:
       - run: npm run test:integration
         env:
           TEST_DATABASE_URL: postgres://runoza:ci-disposable-only@127.0.0.1:55449/runoza
+          TEST_SHARED_TERMINAL_URL: http://127.0.0.1:58059
+          TEST_SHARED_TERMINAL_KEY: ci-terminal-disposable-only-key-0000000000
           TEST_S3_ENDPOINT: http://127.0.0.1:59019
           S3_ACCESS_KEY: ci-runoza
           S3_SECRET_KEY: ci-disposable-storage-only
@@ -59,8 +69,21 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24.22.1
+      - run: node scripts/check-deployment.mjs
       - run: node scripts/init-env.mjs
-      - run: docker compose --env-file .env -f deploy/compose/compose.yaml up --build -d --wait --wait-timeout 180
+      - run: docker compose --env-file .env -f deploy/compose/compose.yaml build
+      - name: Prepare an installation without a checkout
+        shell: bash
+        run: |
+          install_dir=$(mktemp -d)
+          cp compose.yaml "$install_dir/compose.yaml"
+          cp .env "$install_dir/.env"
+          printf '\nRUNOZA_IMAGE=runoza:local\n' >> "$install_dir/.env"
+          echo "RUNOZA_INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+          echo "COMPOSE_FILE=$install_dir/compose.yaml" >> "$GITHUB_ENV"
+          echo "COMPOSE_ENV_FILE=$install_dir/.env" >> "$GITHUB_ENV"
+      - name: Start from only compose.yaml and .env
+        run: cd "$RUNOZA_INSTALL_DIR" && docker compose up --no-build -d --wait --wait-timeout 180
       - run: node scripts/compose-smoke.mjs
-      - if: always()
-        run: docker compose --env-file .env -f deploy/compose/compose.yaml down -v
+      - if: always() && env.RUNOZA_INSTALL_DIR != ''
+        run: cd "$RUNOZA_INSTALL_DIR" && docker compose down -v

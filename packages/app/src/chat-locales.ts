@@ -14,6 +14,10 @@ export const chatDictionaries = {
     LEASE_LOST: "The environment lease expired. The run was stopped.",
     AGENT_STEP_LIMIT: "The agent reached its step limit.",
     ENVIRONMENT_FAILED: "Could not prepare the environment.",
+    TERMINAL_UNAVAILABLE:
+      "The terminal service is unavailable. Try again shortly.",
+    TERMINAL_CONFIG_INVALID:
+      "The terminal service must have multi-user mode enabled without a username prefix.",
     ARTIFACT_INVALID: "Could not save the result file.",
     ARTIFACT_PATH: "Invalid result file path.",
 
@@ -134,6 +138,10 @@ export const chatDictionaries = {
     LEASE_LOST: "Срок аренды окружения истёк. Запуск остановлен.",
     AGENT_STEP_LIMIT: "Агент достиг лимита шагов.",
     ENVIRONMENT_FAILED: "Не удалось подготовить окружение.",
+    TERMINAL_UNAVAILABLE:
+      "Сервис терминалов недоступен. Повторите попытку чуть позже.",
+    TERMINAL_CONFIG_INVALID:
+      "Для сервиса терминалов нужен многопользовательский режим без префикса имён пользователей.",
     ARTIFACT_INVALID: "Не удалось сохранить файл результата.",
     ARTIFACT_PATH: "Недопустимый путь файла результата.",
 

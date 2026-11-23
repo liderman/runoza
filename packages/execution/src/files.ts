@@ -23,7 +23,7 @@ export function workspacePath(path: string, root = false) {
 }
 const script = String.raw`import os,sys,json,base64,hashlib,stat
 p=json.loads(base64.b64decode(sys.argv[1]));op=p['op'];parts=p['path'].split('/') if p['path'] else []
-fd=os.open('/tmp/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+fd=os.open(p['root'],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 try:
  for part in (parts if op=='list' else parts[:-1]):
   n=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=n
@@ -68,9 +68,14 @@ export async function fileOperation<T>(
   signal: AbortSignal,
 ): Promise<T> {
   workspacePath(path, op === "list");
-  const payload = Buffer.from(JSON.stringify({ op, path, ...args })).toString(
-    "base64",
-  );
+  const payload = Buffer.from(
+    JSON.stringify({
+      op,
+      path,
+      ...args,
+      root: executor.workspaceRoot ?? "/tmp/workspace",
+    }),
+  ).toString("base64");
   const code = Buffer.from(script).toString("base64");
   const r = await executor.execute(
     `python3 -c 'import base64;exec(base64.b64decode("${code}"))' ${payload}`,

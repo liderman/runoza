@@ -1,6 +1,7 @@
 import { projectLibraryMigration } from "./project-library-migration.ts";
 import { toolInputMigration } from "./tool-input-migration.ts";
 import { knowledgeMigration } from "./knowledge-migration.ts";
+import { sharedTerminalMigration } from "./shared-terminal-migration.ts";
 import { permissionPatternMigration } from "./permission-pattern-migration.ts";
 import { runFullAccessMigration } from "./run-full-access-migration.ts";
 import { chatDefaultsMigration } from "./chat-defaults-migration.ts";
@@ -31,7 +32,7 @@ import { chatMigration } from "./chat-migration.ts";
 import { resourcesMigration } from "./resources-migration.ts";
 import { agentMigration } from "./agent-migration.ts";
 import { workspaceMigration } from "./workspace-migration.ts";
-export const SCHEMA_VERSION = "033_project_library";
+export const SCHEMA_VERSION = "034_shared_terminal";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -101,6 +102,7 @@ export const migrations: Record<string, Migration> = {
   "031_project_knowledge": knowledgeMigration,
   "032_mcp_questions": toolInputMigration,
   "033_project_library": projectLibraryMigration,
+  "034_shared_terminal": sharedTerminalMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({
@@ -129,8 +131,12 @@ export async function assertSchema(db: Database) {
       "Incompatible application schema; run migrate with matching release",
     );
 }
-export async function heartbeat(db: Database, workerId: string) {
-  await sql`INSERT INTO worker_heartbeats(worker_id) VALUES (${workerId}::uuid) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=now()`.execute(
+export async function heartbeat(
+  db: Database,
+  workerId: string,
+  execution = { configured: false, ready: false },
+) {
+  await sql`INSERT INTO worker_heartbeats(worker_id,server_execution_configured,server_execution_ready) VALUES (${workerId}::uuid,${execution.configured},${execution.ready}) ON CONFLICT(worker_id) DO UPDATE SET last_seen_at=now(),server_execution_configured=EXCLUDED.server_execution_configured,server_execution_ready=EXCLUDED.server_execution_ready`.execute(
     db,
   );
   await sql`DELETE FROM worker_heartbeats WHERE last_seen_at < now()-interval '1 day'`.execute(

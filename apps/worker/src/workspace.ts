@@ -1,3 +1,4 @@
+import { SharedTerminalProvider } from "@runoza/execution/shared";
 import { runEvent } from "@runoza/chat";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +14,8 @@ import {
 } from "@runoza/execution";
 import { saveArtifact } from "@runoza/resources";
 import type { StorageService } from "@runoza/storage";
+const shellQuote = (value: string) =>
+  "'" + value.replaceAll("'", "'\\''") + "'";
 interface Session {
   id: string;
   conversation_id: string;
@@ -92,7 +95,7 @@ export function startWorkspaceWorker(
         lease.cwd === "."
           ? { exitCode: 0 }
           : await lease.executor.execute(
-              lease.cwd === "." ? "pwd" : "mkdir -p /tmp/workspace",
+              "mkdir -p " + shellQuote(lease.cwd ?? "/tmp/workspace"),
               signal,
               async () => {},
             );
@@ -109,7 +112,7 @@ export function startWorkspaceWorker(
     await sql`UPDATE execution_environments SET expires_at=now()+interval '10 minutes' WHERE conversation_id=${conversationId}::uuid AND generation=${request.generation}::uuid AND state='inspection'`.execute(
       db,
     );
-    const { executor } = await pool.inspectWorkspace(conversationId);
+    const { executor, cwd } = await pool.inspectWorkspace(conversationId);
     let result: unknown = {};
     const terminal = async () => {
       const s = (
@@ -158,6 +161,19 @@ export function startWorkspaceWorker(
           )
         ).rows)
           await runEvent(db, r.id, "run.cancelled", "", "cancelled");
+        if (pool instanceof SharedTerminalProvider) {
+          const kind = (
+            await sql<{
+              backend: string;
+            }>`SELECT backend FROM execution_environments WHERE conversation_id=${conversationId}::uuid`.execute(
+              db,
+            )
+          ).rows[0];
+          if (kind?.backend === "shared") {
+            await pool.closeWorkspace(conversationId, request.generation);
+            break;
+          }
+        }
         await sql`UPDATE execution_environments SET state='quarantine',conversation_id=NULL,updated_at=now() WHERE conversation_id=${conversationId}::uuid AND generation=${request.generation}::uuid`.execute(
           db,
         );
@@ -180,7 +196,9 @@ export function startWorkspaceWorker(
         ).rows[0]!;
         const bridge = await connect(s);
         if (!(await desktopScope(db, conversationId)))
-          await bridge.connection!.input("cd /tmp/workspace\r");
+          await bridge.connection!.input(
+            "cd " + shellQuote(cwd ?? "/tmp/workspace") + "\r",
+          );
         result = { id };
         break;
       }

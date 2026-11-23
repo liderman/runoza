@@ -286,7 +286,7 @@ export async function registerAuth(
         serverReady: boolean;
         workerReady: boolean;
         desktopAvailable: boolean;
-      }>`SELECT EXISTS(SELECT 1 FROM execution_environments) AS "serverConfigured",EXISTS(SELECT 1 FROM execution_environments WHERE state='ready') AS "serverReady",EXISTS(SELECT 1 FROM worker_heartbeats WHERE last_seen_at>now()-interval '30 seconds') AS "workerReady",EXISTS(SELECT 1 FROM desktop_devices WHERE owner_id=${u.id}::uuid AND revoked_at IS NULL AND last_seen>now()-interval '15 seconds') AS "desktopAvailable"`.execute(
+      }>`SELECT (EXISTS(SELECT 1 FROM execution_environments WHERE backend='pool') OR EXISTS(SELECT 1 FROM worker_heartbeats WHERE last_seen_at>now()-interval '30 seconds' AND server_execution_configured)) AS "serverConfigured",(EXISTS(SELECT 1 FROM execution_environments WHERE backend='pool' AND state='ready') OR EXISTS(SELECT 1 FROM worker_heartbeats WHERE last_seen_at>now()-interval '30 seconds' AND server_execution_ready)) AS "serverReady",EXISTS(SELECT 1 FROM worker_heartbeats WHERE last_seen_at>now()-interval '30 seconds') AS "workerReady",EXISTS(SELECT 1 FROM desktop_devices WHERE owner_id=${u.id}::uuid AND revoked_at IS NULL AND last_seen>now()-interval '15 seconds') AS "desktopAvailable"`.execute(
         db,
       )
     ).rows[0];

@@ -58,6 +58,7 @@ const allowed = {
   ],
   auth: ["db"],
   worker: [
+    "execution/shared",
     "telemetry",
     "auth",
     "agent",

@@ -49,6 +49,7 @@ services:
       code-a: {}
       code-b: {}
     environment:
+      SHARED_TERMINAL_URL: ""
       EXECUTOR_SECRETS_KEY: ${EXECUTOR_SECRETS_KEY:?Set EXECUTOR_SECRETS_KEY in .env.code}
       TERMINAL_POOL: '[{"id":"terminal-a","url":"http://terminal-a:8000","token":"${TERMINAL_A_TOKEN:?Run scripts/code-pool.mjs}","generation":"${TERMINAL_A_GENERATION:?Run scripts/code-pool.mjs}"},{"id":"terminal-b","url":"http://terminal-b:8000","token":"${TERMINAL_B_TOKEN:?Run scripts/code-pool.mjs}","generation":"${TERMINAL_B_GENERATION:?Run scripts/code-pool.mjs}"}]'
   terminal-a:

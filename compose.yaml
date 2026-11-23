@@ -1,0 +1,149 @@
+# Standalone installation: place this file beside .env, then docker compose up -d.
+name: runoza
+x-runtime: &runtime
+  image: ${RUNOZA_IMAGE:?Use the compose.yaml release asset or set RUNOZA_IMAGE to the matching release digest}
+  init: true
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  stop_grace_period: 30s
+  environment: &environment
+    DATABASE_URL: ${DATABASE_URL:-postgres://runoza:${POSTGRES_PASSWORD:-}@postgres:5432/runoza}
+    S3_ENDPOINT: ${S3_ENDPOINT:-http://rustfs:9000}
+    S3_REGION: ${S3_REGION:-us-east-1}
+    S3_BUCKET: ${S3_BUCKET:-runoza}
+    S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+    S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+    S3_PATH_STYLE: ${S3_PATH_STYLE:-true}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    MCP_ALLOWED_INTERNAL_ORIGINS: ${MCP_ALLOWED_INTERNAL_ORIGINS:-}
+    MCP_OAUTH_ALLOWED_ORIGINS: ${MCP_OAUTH_ALLOWED_ORIGINS:-}
+    MCP_FORM_TIMEOUT_SECONDS: ${MCP_FORM_TIMEOUT_SECONDS:-120}
+    MCP_CATALOG_MAX_TOOLS: ${MCP_CATALOG_MAX_TOOLS:-2000}
+services:
+  terminal-init:
+    <<: *runtime
+    user: "0:0"
+    environment: {}
+    command: [node, apps/worker/dist/terminal-key.js]
+    volumes: [terminal-key:/run/runoza-terminal]
+    restart: "no"
+  terminal:
+    # Native multi-user provisioning and PTY cwd checks require a root server process.
+    # Commands still run under the account selected by X-User-Id.
+    user: "0:0"
+    image: ${SHARED_TERMINAL_IMAGE:-ghcr.io/open-webui/open-terminal:0.17.22@sha256:56c5c185a02cb91c97de38f6c55720353306d2780b9c6fe2256f401d6d48b982}
+    environment:
+      OPEN_TERMINAL_MULTI_USER: "true"
+      OPEN_TERMINAL_USER_PREFIX: ""
+      OPEN_TERMINAL_API_KEY_FILE: /run/runoza-terminal/key
+      OPEN_TERMINAL_MAX_TERMINAL_SESSIONS: "64"
+    volumes:
+      - terminal-home:/home
+      - terminal-key:/run/runoza-terminal:ro
+    networks: [terminal]
+    mem_limit: ${TERMINAL_MEMORY:-2g}
+    cpus: ${TERMINAL_CPUS:-2}
+    pids_limit: 512
+    depends_on:
+      terminal-init: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        [
+          CMD,
+          python,
+          -c,
+          "import socket; socket.create_connection(('127.0.0.1',8000),3).close()",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+    restart: unless-stopped
+  postgres:
+    init: true
+    profiles: [local-db]
+    image: ${POSTGRES_IMAGE:-postgres:18-trixie@sha256:e923a22ac074261dd73970c57edf659475bf0497cb9456f17d98ed7cdd3ca913}
+    environment:
+      POSTGRES_USER: runoza
+      POSTGRES_DB: runoza
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes: [postgres-data:/var/lib/postgresql]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U runoza -d runoza"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  rustfs:
+    profiles: [local-storage]
+    image: rustfs/rustfs@sha256:b81d16a90ee25bd9511280127ca1471788c6e874cf0f0da759645f46b2dc1d74
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      RUSTFS_CONSOLE_ENABLE: "false"
+    volumes: [object-data:/data]
+    healthcheck:
+      test: [CMD, curl, -fsS, http://127.0.0.1:9000/health]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+  migrate:
+    <<: *runtime
+    command: [node, apps/migrate/dist/main.js]
+    restart: "no"
+  api:
+    <<: *runtime
+    environment:
+      <<: *environment
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://127.0.0.1:3000}
+      SECRETS_KEY: ${SECRETS_KEY:?Set SECRETS_KEY}
+      PROVIDER_SECRETS_KEY: ${PROVIDER_SECRETS_KEY:?Set PROVIDER_SECRETS_KEY}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:?Set BOOTSTRAP_TOKEN}
+      OIDC_ALLOW_INSECURE_HTTP: ${OIDC_ALLOW_INSECURE_HTTP:-false}
+    ports: ["${BIND_ADDRESS:-127.0.0.1}:${PORT:-3000}:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 8s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+  worker:
+    <<: *runtime
+    networks:
+      default: { priority: 1000 }
+      terminal: { priority: 100 }
+    volumes: [terminal-key:/run/runoza-terminal:ro]
+    environment:
+      <<: *environment
+      PROVIDER_SECRETS_KEY: ${PROVIDER_SECRETS_KEY:?Set PROVIDER_SECRETS_KEY}
+      SHARED_TERMINAL_URL: ${SHARED_TERMINAL_URL-http://terminal:8000}
+      SHARED_TERMINAL_API_KEY: ${SHARED_TERMINAL_API_KEY:-}
+      SHARED_TERMINAL_KEY_FILE: /run/runoza-terminal/key
+    command: [node, apps/worker/dist/main.js]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      terminal-init: { condition: service_completed_successfully }
+    healthcheck:
+      test: [CMD, node, apps/worker/dist/health.js]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+    restart: unless-stopped
+volumes:
+  postgres-data:
+  object-data:
+  terminal-home:
+  terminal-key:
+networks:
+  terminal: {}

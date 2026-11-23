@@ -2,6 +2,10 @@ import { initializeTelemetry } from "@runoza/telemetry";
 import { startWorkspaceWorker } from "./workspace.ts";
 import { PiAgentRuntime } from "@runoza/agent";
 import { PostgresEnvironmentProvider, terminalConfig } from "@runoza/execution";
+import {
+  SharedTerminalProvider,
+  sharedTerminalConfig,
+} from "@runoza/execution/shared";
 import { writeFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { loadConfig, logEvent } from "@runoza/config";
@@ -23,7 +27,10 @@ async function main() {
     boss = createJobs(config.databaseUrl),
     id = randomUUID();
   const storage = createStorage(config.s3);
-  const environments = new PostgresEnvironmentProvider(db, terminalConfig());
+  const shared = sharedTerminalConfig();
+  const environments = shared
+    ? new SharedTerminalProvider(db, shared, terminalConfig())
+    : new PostgresEnvironmentProvider(db, terminalConfig());
   const runtime = new PiAgentRuntime(db, environments, storage);
   let stopWorkspace: (() => Promise<void>) | undefined;
   let stopPdf: (() => Promise<void>) | undefined;
@@ -99,7 +106,13 @@ async function main() {
       logEvent("error", "schedule_tick_failed"),
     );
     const pulse = async () => {
-      await heartbeat(db, id);
+      await heartbeat(db, id, {
+        configured: Boolean(shared),
+        ready:
+          environments instanceof SharedTerminalProvider
+            ? await environments.ready()
+            : false,
+      });
       await writeFile("/tmp/runoza-worker-heartbeat", String(Date.now()));
     };
     startupStage = "heartbeat";

@@ -216,7 +216,7 @@ export async function runMcp(
           executor,
           m.command,
           signal,
-          "/tmp/workspace",
+          executor.workspaceRoot ?? "/tmp/workspace",
           invalidateCatalog,
           m.interactive,
         );

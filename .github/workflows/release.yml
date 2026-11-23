@@ -157,6 +157,12 @@ jobs:
       IMAGE_REFERENCE: ${{ needs.image.outputs.reference }}
       PRERELEASE: ${{ needs.version.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Prepare standalone Docker installation
+        run: node scripts/package-deployment.mjs "$IMAGE_REFERENCE" release-assets
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: desktop-*
@@ -167,12 +173,21 @@ jobs:
           cd release-assets
           assets=(Runoza-*)
           test "${#assets[@]}" -eq 6
+          assets+=(compose.yaml env.example)
           sha256sum "${assets[@]}" > SHA256SUMS.txt
           flags=()
           if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
           notes="$RUNNER_TEMP/runoza-release.md"
           {
             printf 'Docker image: `%s`\n\n' "$IMAGE_REFERENCE"
+            release_notes="../docs/release-notes/$GITHUB_REF_NAME.md"
+            if [[ -f "$release_notes" ]]; then cat "$release_notes"; printf '\n\n'; fi
+            printf 'Server setup requires only Docker Engine and Docker Compose v2. For a fresh installation:\n\n```sh\nmkdir runoza\ncd runoza\n'
+            base="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+            printf 'curl -fL %s/compose.yaml -o compose.yaml\n' "$base"
+            printf 'curl -fL %s/env.example -o .env\nchmod 600 .env\n```\n\n' "$base"
+            printf 'Fill the six secrets and server address in `.env`, then run:\n\n```sh\ndocker compose pull\ndocker compose up -d --wait --wait-timeout 180\n```\n\n'
+            printf 'For upgrades, keep your existing `.env` and encryption keys; replace only `compose.yaml`. Update or remove any `RUNOZA_IMAGE` override.\n\n'
             printf 'Portable desktop bundles for Windows, macOS, and Linux (x64 and ARM64). Check SHA256SUMS.txt before extracting.\n\n'
             printf 'Desktop builds lack production signing, macOS notarization, and automatic updates. Use the web app if your operating system blocks the bundle.\n\n'
             printf '[Setup instructions](%s/%s/blob/%s/README.md)\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"

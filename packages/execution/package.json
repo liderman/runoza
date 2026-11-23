@@ -8,12 +8,17 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./dist/index.js"
+    },
+    "./shared": {
+      "types": "./src/shared.ts",
+      "default": "./dist/shared.js"
     }
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.4.0",
     "@runoza/auth": "0.0.0",
     "@runoza/db": "0.0.0",
-    "@runoza/telemetry": "0.0.0"
+    "@runoza/telemetry": "0.0.0",
+    "ws": "8.22.2"
   }
 }

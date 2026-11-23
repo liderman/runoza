@@ -2,12 +2,13 @@ import { execFileSync, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import assert from "node:assert/strict";
+import { sharedTerminalSmoke } from "./shared-terminal-smoke.mjs";
 const compose = [
   "compose",
   "--env-file",
-  ".env",
+  process.env.COMPOSE_ENV_FILE ?? ".env",
   "-f",
-  "deploy/compose/compose.yaml",
+  process.env.COMPOSE_FILE ?? "deploy/compose/compose.yaml",
 ];
 function docker(args) {
   return execFileSync("docker", [...compose, ...args], {
@@ -17,7 +18,7 @@ function docker(args) {
   });
 }
 const env = Object.fromEntries(
-  (await readFile(".env", "utf8"))
+  (await readFile(process.env.COMPOSE_ENV_FILE ?? ".env", "utf8"))
     .split("\n")
     .filter((x) => x && !x.startsWith("#"))
     .map((x) => {
@@ -25,7 +26,8 @@ const env = Object.fromEntries(
       return [x.slice(0, i), x.slice(i + 1)];
     }),
 );
-const base = `http://127.0.0.1:${env.PORT ?? 3000}`;
+const base =
+  process.env.COMPOSE_SMOKE_BASE_URL ?? `http://127.0.0.1:${env.PORT ?? 3000}`;
 async function ready() {
   for (let i = 0; i < 90; i++) {
     try {
@@ -44,6 +46,11 @@ const inside = (code) =>
   );
 const setup = `import {loadConfig} from '@runoza/config';import {createDatabase,sql} from '@runoza/db';import {S3Client,PutObjectCommand,GetObjectCommand,DeleteObjectCommand} from '@aws-sdk/client-s3';const c=loadConfig(),db=createDatabase(c.databaseUrl);const s3=new S3Client({endpoint:c.s3.endpoint,region:c.s3.region,forcePathStyle:c.s3.pathStyle,credentials:{accessKeyId:c.s3.accessKey,secretAccessKey:c.s3.secretKey}});`;
 await ready();
+assert.equal(
+  (await (await fetch(base + "/api/v1/auth/options")).json()).bootstrapRequired,
+  true,
+  "Compose smoke requires a fresh disposable installation",
+);
 const before = inside(
   setup +
     `const id=(await sql\`SELECT installation_id FROM installation\`.execute(db)).rows[0].installation_id;await s3.send(new PutObjectCommand({Bucket:c.s3.bucket,Key:'stage1-smoke-marker',Body:id}));console.log(JSON.stringify({id}));await db.destroy();s3.destroy();`,
@@ -94,12 +101,14 @@ const concurrent = await Promise.all(
   ),
 );
 for (const result of concurrent) assert.match(result.stdout, /"applied":0/);
+await sharedTerminalSmoke({ base, env, docker });
 await mkdir("work/reports", { recursive: true });
 await writeFile(
   "work/reports/compose-smoke.json",
   JSON.stringify(
     {
       status: "PASS",
+      sharedTerminal: true,
       workerExecution: true,
       workerReadiness: true,
       databasePersistence: true,

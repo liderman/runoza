@@ -101,11 +101,23 @@ The terminal session is a process/PTY within the environment. It doesn't create 
 
 OpenTerminalAdapter is the first implementation of Executor; the backend-specific ID and URL do not enter the domain models; access checks are performed before the adapter is accessed; when the engine is replaced, the general screens and tools of the agent do not change.
 
-Initial code mode delivery uses a pre-prepared pool of individual instances of Open Terminal on a private network. Broker gives exclusive environment leases to one workspace with clearly specified participants. PostgreSQL stores lease, heartbeat, expiry, and fencing token; the outdated owner cannot continue execution. When the pool is exhausted, the request expects capacity or receives a clear error.
+The default Compose deployment uses one published Open Terminal image in native multi-user
+mode. `SharedTerminalProvider` maps each organization/user pair to a stable OS account and
+keeps each conversation in its own persistent home subdirectory. `OpenTerminalAdapter`
+passes user/session headers for HTTP and WebSocket requests and the selected root for commands,
+files, artifacts and stdio MCP. Database leases fence application requests; user/project ACL
+checks remain live. Closing a lease preserves files.
 
-Within a leased environment, terminals are created using APIs. Container heating is an optimization and a way to avoid the Docker API on the main server; it is not needed because there are no terminal session APIs. Before transferring the environment to another, the workspace container and temporary volume are recreated. Uncleaned and lost environments are placed in quarantine. Permanent workspace-volume is not transferred to another owner.
+This mode is for a trusted organization: accounts share a container, network and aggregate
+resource limits. It does not provide isolation against hostile code. The terminal has its own
+network with the worker, a persistent home volume and an automatically initialized key volume;
+no Docker socket or application credentials are mounted. Stronger isolation belongs to a future
+separate terminal manager behind the same provider/executor contracts.
 
-Dynamic provisioning is added later through the EnvironmentProvider. Docker socket is only available by providing a broker, not an API, worker or sandbox. Environments are limited by CPU, RAM, PID, disk, time and network; do not receive the secrets of the database, S3 and model providers. For hostile code, conventional containers are not considered sufficient isolation: reinforced runtime / VM is a separate delivery boundary.
+The earlier two-slot isolated pool remains an optional backend for existing installations.
+Its operator, per-conversation volumes and recycling rules are described in the
+[legacy pool guide](legacy-server-pool.md). See [current server execution](server-code.md)
+for the standard deployment and persistence rules.
 
 ## Desktop execution
 
@@ -262,7 +274,7 @@ files through executor after separate confirmation; reading SKILL.md does not ex
 its own.
 
 HTTP MCP works in a trusted server network adapter with exact-origin policy, verification and
-pinning DNS. Stdio only works in an isolated server workspace via the bridge or in the desktop
+pinning DNS. Stdio only works in the selected server workspace via the bridge or in the desktop
 broker of the selected folder. The session belongs to the run and closes with it. Cache schemas,
 OAuth tokens/refresh/revoke - personal, even if the connection is published by the organization.
 

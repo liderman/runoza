@@ -2,9 +2,21 @@
 
 ## Supported contour
 
-Docker Compose local server: API, worker, PostgreSQL, RustFS; optionally two Open Terminal and egress proxy. Proven desktop - macOS x64. Web - Chrome. EN/RU interface, light/dark theme. Windows, Linux desktop, macOS ARM, external S3/OIDC and individual local models require verification on the target installation. OpenAI-compatible API does not guarantee, reasoning or accurate tools for each model.
+Docker Compose local server: API, worker, PostgreSQL, RustFS, and shared Open Terminal. The earlier isolated pool and egress proxy remain optional. Proven desktop - macOS x64. Web - Chrome. EN/RU interface, light/dark theme. Windows, Linux desktop, macOS ARM, external S3/OIDC and individual local models require verification on the target installation. OpenAI-compatible API does not guarantee, reasoning or accurate tools for each model.
 
 Default access via loopback only: An organization requires HTTPS, network access, and separate reverse proxy verification; do not publish local PostgreSQL/S3/terminal test ports.
+
+## Standard shared-terminal installation
+
+Use the two release files and `docker compose up -d --wait` as in the [quick start](../README.md).
+There is no host pool manager or Node.js installation. Include the `terminal-home` and
+`terminal-key` volumes with PostgreSQL, object storage and `.env` in backups. Stop writers
+before taking a consistent snapshot; preserve the database mapping together with user homes.
+The local backup helper includes the shared terminal volumes. See [server workspaces](server-code.md)
+for limits, lifecycle and diagnosis.
+
+The pool launch/recovery commands below describe the **optional legacy pool**, not prerequisites
+for the standard shared-terminal stack.
 
 ## Launch and verification
 

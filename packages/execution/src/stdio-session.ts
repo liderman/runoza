@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { type AskForInput, McpError, validateTools } from "./mcp.ts";
 import type { Executor } from "./index.ts";
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
-// Runs only in an isolated executor. The trusted API/worker never spawns project code.
+// Runs only in the selected executor. The trusted API/worker never spawns project code.
 const daemon = String.raw`import os,sys,json,socket,subprocess,selectors,time,signal,base64,threading
 c=json.loads(base64.b64decode(sys.argv[1]));os.umask(0o077)
 sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);sock.bind(c['socket']);sock.listen(1);sock.settimeout(1)

@@ -50,7 +50,10 @@ export interface AgentRuntime {
   }>;
 }
 const quote = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'";
-export function artifactCommand(path: string) {
+export function artifactCommand(
+  path: string,
+  workspaceRoot = "/tmp/workspace",
+) {
   if (
     !/^[a-zA-Z0-9_./ -]{1,200}$/.test(path) ||
     path.startsWith("/") ||
@@ -58,7 +61,7 @@ export function artifactCommand(path: string) {
   )
     throw new ExecutionError("ARTIFACT_PATH");
   // Directory descriptors and O_NOFOLLOW prevent sandbox-controlled symlink traversal.
-  const code = `import os,stat,base64\nfd=os.open('/tmp/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\nparts=${JSON.stringify(path.split("/"))}\nfor part in parts[:-1]:\n n=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=n\nf=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)\ns=os.fstat(f)\nassert stat.S_ISREG(s.st_mode) and 0<s.st_size<=1048576\nb=os.read(f,1048577)\nassert len(b)<=1048576\nprint(base64.b64encode(b).decode())`;
+  const code = `import os,stat,base64\nfd=os.open(${JSON.stringify(workspaceRoot)},os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)\nparts=${JSON.stringify(path.split("/"))}\nfor part in parts[:-1]:\n n=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=n\nf=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)\ns=os.fstat(f)\nassert stat.S_ISREG(s.st_mode) and 0<s.st_size<=1048576\nb=os.read(f,1048577)\nassert len(b)<=1048576\nprint(base64.b64encode(b).decode())`;
   return "python3 -c " + quote(code);
 }
 export class PiAgentRuntime implements AgentRuntime {
@@ -475,7 +478,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   lease.cwd === "."
                     ? { exitCode: 0 }
                     : await lease.executor.execute(
-                        lease.cwd === "." ? "pwd" : "mkdir -p /tmp/workspace",
+                        "mkdir -p " + quote(lease.cwd ?? "/tmp/workspace"),
                         signal,
                         async () => {},
                       );
@@ -602,8 +605,11 @@ export class PiAgentRuntime implements AgentRuntime {
               } else
                 r = await lease!.executor.execute(
                   name === "execute"
-                    ? "cd " + (lease!.cwd ?? "/tmp/workspace") + " && " + value
-                    : artifactCommand(value),
+                    ? "cd " +
+                        quote(lease!.cwd ?? "/tmp/workspace") +
+                        " && " +
+                        value
+                    : artifactCommand(value, lease!.cwd ?? "/tmp/workspace"),
                   signal,
                   async (output) => {
                     await authorized();

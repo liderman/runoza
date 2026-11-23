@@ -24,6 +24,44 @@ x-runtime: &runtime
     MCP_FORM_TIMEOUT_SECONDS: ${MCP_FORM_TIMEOUT_SECONDS:-120}
     MCP_CATALOG_MAX_TOOLS: ${MCP_CATALOG_MAX_TOOLS:-2000}
 services:
+  terminal-init:
+    <<: *runtime
+    user: "0:0"
+    environment: {}
+    command: [node, apps/worker/dist/terminal-key.js]
+    volumes: [terminal-key:/run/runoza-terminal]
+    restart: "no"
+  terminal:
+    # Native multi-user provisioning and PTY cwd checks require a root server process.
+    # Commands still run under the account selected by X-User-Id.
+    user: "0:0"
+    image: ${SHARED_TERMINAL_IMAGE:-ghcr.io/open-webui/open-terminal:0.17.22@sha256:56c5c185a02cb91c97de38f6c55720353306d2780b9c6fe2256f401d6d48b982}
+    environment:
+      OPEN_TERMINAL_MULTI_USER: "true"
+      OPEN_TERMINAL_USER_PREFIX: ""
+      OPEN_TERMINAL_API_KEY_FILE: /run/runoza-terminal/key
+      OPEN_TERMINAL_MAX_TERMINAL_SESSIONS: "64"
+    volumes:
+      - terminal-home:/home
+      - terminal-key:/run/runoza-terminal:ro
+    networks: [terminal]
+    mem_limit: ${TERMINAL_MEMORY:-2g}
+    cpus: ${TERMINAL_CPUS:-2}
+    pids_limit: 512
+    depends_on:
+      terminal-init: { condition: service_completed_successfully }
+    healthcheck:
+      test:
+        [
+          CMD,
+          python,
+          -c,
+          "import socket; socket.create_connection(('127.0.0.1',8000),3).close()",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 30
+    restart: unless-stopped
   postgres:
     init: true
     profiles: [local-db]
@@ -84,12 +122,20 @@ services:
     restart: unless-stopped
   worker:
     <<: *runtime
+    networks:
+      default: { priority: 1000 }
+      terminal: { priority: 100 }
+    volumes: [terminal-key:/run/runoza-terminal:ro]
     environment:
       <<: *environment
       PROVIDER_SECRETS_KEY: ${PROVIDER_SECRETS_KEY:?Set PROVIDER_SECRETS_KEY}
+      SHARED_TERMINAL_URL: ${SHARED_TERMINAL_URL-http://terminal:8000}
+      SHARED_TERMINAL_API_KEY: ${SHARED_TERMINAL_API_KEY:-}
+      SHARED_TERMINAL_KEY_FILE: /run/runoza-terminal/key
     command: [node, apps/worker/dist/main.js]
     depends_on:
       migrate: { condition: service_completed_successfully }
+      terminal-init: { condition: service_completed_successfully }
     healthcheck:
       test: [CMD, node, apps/worker/dist/health.js]
       interval: 10s
@@ -99,3 +145,7 @@ services:
 volumes:
   postgres-data:
   object-data:
+  terminal-home:
+  terminal-key:
+networks:
+  terminal: {}

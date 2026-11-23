@@ -18,7 +18,7 @@ Use Node **24.22.1** and npm **11.6.2**.
 - `npm start` / `npm run worker`: run compiled API or worker with configured environment.
 - `npm run desktop`: launch Electron; `npm run package:desktop` creates a local bundle.
 
-For Compose, follow `docs/upstream-delivery.md`; initialize using `node scripts/init-env.mjs`.
+For installation, use the standalone root `compose.yaml` and `.env.example`; no host Node.js is required. For source builds, use `deploy/compose/compose.yaml` and the optional `node scripts/init-env.mjs` helper. Follow `docs/upstream-delivery.md`.
 
 ## Coding Style & Naming Conventions
 
@@ -34,7 +34,7 @@ Use concise imperative commit summaries. PRs should explain behavior, tests, mig
 
 ## Security & Configuration
 
-Exclude environment files, secrets, backups, and user content from Git/logs. Store local diagnostic evidence under `work/`; use relative paths and synthetic identities in tracked docs and fixtures. Preserve live ACL checks, proxied S3 access, and isolated execution. Use pinned upstream images and compatible licenses; avoid dependency patches, npm overrides, or edits to `node_modules`.
+Exclude environment files, secrets, backups, and user content from Git/logs. Store local diagnostic evidence under `work/`; use relative paths and synthetic identities in tracked docs and fixtures. Preserve live ACL checks and proxied S3 access. The default shared terminal is for trusted organizations, with per-user accounts and conversation folders; do not describe it as a security isolation boundary. Preserve the optional pool backend for existing deployments. Use pinned upstream images and compatible licenses; avoid dependency patches, npm overrides, or edits to `node_modules`.
 
 ## Gravity UI & Branding
 
