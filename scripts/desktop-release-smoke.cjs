@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { writeSync } = require("node:fs");
 
 assert.ok(process.versions.electron, "Run with the packaged Electron binary");
 const pty = require(process.argv[2]);
@@ -21,5 +22,7 @@ terminal.onExit(({ exitCode }) => {
   clearTimeout(timeout);
   assert.equal(exitCode, 0);
   assert.match(output, /RUNOZA_PTY_OK/);
-  console.log(`Packaged PTY works on ${process.platform}/${process.arch}`);
+  writeSync(1, `Packaged PTY works on ${process.platform}/${process.arch}\n`);
+  // ConPTY may keep a console listener alive after the test child exits.
+  process.exit(0);
 });

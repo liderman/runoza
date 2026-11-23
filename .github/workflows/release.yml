@@ -112,7 +112,7 @@ jobs:
           retention-days: 14
 
   image:
-    needs: [ci, version, desktop]
+    needs: [ci, version]
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

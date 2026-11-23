@@ -17,9 +17,10 @@ git push origin vX.Y.Z-alpha.1
 
 The workflow reruns CI at the tagged commit and builds the Electron app on native Windows,
 macOS, and Linux runners for x64 and ARM64. Each job rebuilds the PTY module against the locked
-Electron version and starts a shell through the module in the packaged binary. After all checks
-pass, the workflow pushes a multi-architecture server image with provenance and an SBOM to
-[GitHub Container Registry](https://github.com/liderman/runoza/pkgs/container/runoza). It attaches
+Electron version and starts a shell through the module in the packaged binary. When CI passes,
+the workflow pushes a multi-architecture server image with provenance and an SBOM to
+[GitHub Container Registry](https://github.com/liderman/runoza/pkgs/container/runoza). After the server
+image and six desktop bundles are ready, it attaches
 the six archives and their SHA-256 checksums to a [GitHub release](https://github.com/liderman/runoza/releases).
 The notes contain the image digest for deployment. Deploy by version or digest.
 To trigger the workflow manually for an existing version tag, use `gh workflow run release.yml --ref <tag>`.
