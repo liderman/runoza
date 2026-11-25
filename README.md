@@ -5,17 +5,17 @@ Runóza is a self-hosted, multi-user AI workspace for the web and desktop. Conne
 ## Quick start
 
 The server needs **Docker Engine and Docker Compose v2**. Download just
-[`compose.yaml`](https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.7/compose.yaml) and
-[`.env.example`](https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.7/env.example),
+[`compose.yaml`](https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.8/compose.yaml) and
+[`.env.example`](https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.8/env.example),
 saving the latter as `.env` in the same directory. No Node.js, Git, source archive, or build is needed.
 
-For a fresh installation of **0.1.0-alpha.7**, you can copy the two files manually or run:
+For a fresh installation of **0.1.0-alpha.8**, you can copy the two files manually or run:
 
 ```sh
 mkdir runoza
 cd runoza
-curl -fL https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.7/compose.yaml -o compose.yaml
-curl -fL https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.7/env.example -o .env
+curl -fL https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.8/compose.yaml -o compose.yaml
+curl -fL https://github.com/liderman/runoza/releases/download/v0.1.0-alpha.8/env.example -o .env
 chmod 600 .env
 ```
 

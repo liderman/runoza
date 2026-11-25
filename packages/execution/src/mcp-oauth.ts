@@ -6,7 +6,13 @@ import {
 } from "@modelcontextprotocol/client";
 import { sql, type Database } from "@runoza/db";
 import { secretBox, digest } from "@runoza/auth";
-import { McpError, pinnedMcpFetch, mcpUrl } from "./mcp.ts";
+import { mcpAllowedOrigins } from "./mcp-network.ts";
+import {
+  McpError,
+  pinnedMcpFetch,
+  mcpUrl,
+  type McpOriginPolicy,
+} from "./mcp.ts";
 type ClientInformation = Awaited<
   ReturnType<OAuthClientProvider["clientInformation"]>
 >;
@@ -24,6 +30,7 @@ export interface McpOAuthRecord {
 export function oauthFetch(
   endpoint: string,
   signal: AbortSignal,
+  allowInternal?: McpOriginPolicy,
 ): typeof fetch {
   const origins = new Set([
     new URL(endpoint).origin,
@@ -36,13 +43,14 @@ export function oauthFetch(
     const request = new Request(input, init);
     const u = new URL(request.url);
     if (!origins.has(u.origin)) throw new McpError("MCP_OAUTH_ORIGIN_DENIED");
-    return pinnedMcpFetch(request.url, signal)(request);
+    return pinnedMcpFetch(request.url, signal, allowInternal)(request);
   };
 }
 export function oauthProvider(
   record: McpOAuthRecord,
   save: (record: McpOAuthRecord) => Promise<void>,
   state?: string,
+  allowInternal = process.env.MCP_ALLOWED_INTERNAL_ORIGINS ?? "",
 ) {
   let redirect: string | undefined;
   const provider: OAuthClientProvider = {
@@ -96,9 +104,7 @@ export function oauthProvider(
         url.hash ||
         !(
           url.protocol === "https:" ||
-          (process.env.MCP_ALLOWED_INTERNAL_ORIGINS ?? "")
-            .split(",")
-            .includes(url.origin)
+          allowInternal.split(",").includes(url.origin)
         )
       )
         throw new McpError("MCP_OAUTH_ORIGIN_DENIED");
@@ -126,13 +132,18 @@ export async function authorizeMcpOAuth(
     code?: string;
     iss?: string;
     force?: boolean;
+    allowInternal?: McpOriginPolicy;
   } = {},
 ) {
-  mcpUrl(record.endpoint);
-  const instance = oauthProvider(record, save, options.state);
+  const allowed =
+    typeof options.allowInternal === "function"
+      ? await options.allowInternal()
+      : options.allowInternal;
+  mcpUrl(record.endpoint, allowed);
+  const instance = oauthProvider(record, save, options.state, allowed);
   const result = await auth(instance.provider, {
     serverUrl: record.endpoint,
-    fetchFn: oauthFetch(record.endpoint, signal),
+    fetchFn: oauthFetch(record.endpoint, signal, options.allowInternal),
     ...(options.code
       ? { authorizationCode: options.code, iss: options.iss }
       : {}),
@@ -200,6 +211,7 @@ export async function mcpOAuthAuthorization(
     ).rows.length
   )
     return undefined;
+  const policy = () => connectionOrigins(db, id);
   async function token(force = false) {
     return db.transaction().execute(async (trx) => {
       signal.throwIfAborted();
@@ -236,6 +248,7 @@ export async function mcpOAuthAuthorization(
           record,
           (r) => persistMcpOAuth(trx, key, id, user, r),
           signal,
+          { allowInternal: policy },
         );
         if (result.result !== "AUTHORIZED")
           throw new McpError("MCP_REAUTHORIZE");
@@ -288,7 +301,9 @@ export async function revokeMcpOAuth(
         : "access_token",
       ...(record.client ? { client_id: record.client.client_id } : {}),
     });
-    const response = await oauthFetch(record.endpoint, signal)(endpoint, {
+    const response = await oauthFetch(record.endpoint, signal, () =>
+      connectionOrigins(db, id),
+    )(endpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
@@ -298,4 +313,16 @@ export async function revokeMcpOAuth(
   } catch {
     return false;
   }
+}
+
+async function connectionOrigins(db: Database, id: string) {
+  const row = (
+    await sql<{
+      organization_id: string;
+    }>`SELECT organization_id FROM mcp_connections WHERE id=${id}::uuid`.execute(
+      db,
+    )
+  ).rows[0];
+  if (!row) throw new McpError("MCP_UNAVAILABLE");
+  return mcpAllowedOrigins(db, row.organization_id);
 }

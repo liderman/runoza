@@ -3,6 +3,7 @@ import { projectAccess, extensionCatalog } from "@runoza/resources";
 import { sql, type Database } from "@runoza/db";
 import { secretBox } from "@runoza/auth";
 import {
+  mcpAllowedOrigins,
   RemoteMcp,
   ExecutorStdioMcp,
   mcpOAuthAuthorization,
@@ -252,7 +253,7 @@ export async function runMcp(
         m.endpoint,
         authorization ? "" : token,
         signal,
-        undefined,
+        () => mcpAllowedOrigins(db, m.organization_id),
         Boolean(sessions),
         authorization,
         invalidateCatalog,

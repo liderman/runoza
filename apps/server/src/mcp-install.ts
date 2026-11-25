@@ -1,3 +1,4 @@
+import { mcpAllowedOrigins } from "@runoza/execution";
 import type { FastifyInstance } from "fastify";
 import type { AuthContext } from "./auth.ts";
 import { sql } from "@runoza/db";
@@ -93,7 +94,10 @@ export async function registerMcpInstall(
         if (!b.endpoint || b.command?.length || b.deviceId)
           fail(400, "INVALID_REQUEST");
         try {
-          mcpUrl(b.endpoint);
+          mcpUrl(
+            b.endpoint,
+            await mcpAllowedOrigins(ctx.db, u.organization_id),
+          );
         } catch {
           fail(400, "MCP_URL_DENIED");
         }

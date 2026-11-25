@@ -6,6 +6,7 @@ import { audit, digest, fail, rateLimit } from "@runoza/auth";
 import { mcpAccess } from "@runoza/resources";
 import {
   authorizeMcpOAuth,
+  mcpAllowedOrigins,
   openMcpOAuth,
   sealMcpOAuth,
   persistMcpOAuth,
@@ -75,7 +76,11 @@ export async function registerMcpOAuth(app: FastifyInstance, ctx: AuthContext) {
             );
           },
           AbortSignal.timeout(30000),
-          { state, force: true },
+          {
+            state,
+            force: true,
+            allowInternal: () => mcpAllowedOrigins(ctx.db, u.organization_id),
+          },
         );
         if (result.result === "AUTHORIZED") {
           await persistMcpOAuth(ctx.db, key, req.params.id, u.id, record);
@@ -129,7 +134,11 @@ export async function registerMcpOAuth(app: FastifyInstance, ctx: AuthContext) {
         record,
         async () => {},
         AbortSignal.timeout(30000),
-        { code: q.code, iss: q.iss },
+        {
+          code: q.code,
+          iss: q.iss,
+          allowInternal: () => mcpAllowedOrigins(ctx.db, u.organization_id),
+        },
       );
       if (result.result !== "AUTHORIZED") fail(502, "MCP_OAUTH_FAILED");
       await persistMcpOAuth(ctx.db, key, flow.connection_id, u.id, record);

@@ -1,3 +1,5 @@
+import { mcpAllowedOrigins } from "@runoza/execution";
+import { registerMcpNetwork } from "./mcp-network.ts";
 import type { FastifyInstance } from "fastify";
 import { sql } from "@runoza/db";
 import {
@@ -22,6 +24,7 @@ export async function registerExtensions(
   ctx: AuthContext,
 ) {
   const { db, config } = ctx;
+  await registerMcpNetwork(app, ctx);
   app.get("/api/v1/skills", async (req) => ({
     skills: await listSkills(db, await ctx.identity(req)),
   }));
@@ -150,7 +153,7 @@ export async function registerExtensions(
     const b = req.body as McpBody;
     if (b.transport === "http") {
       try {
-        mcpUrl(b.endpoint);
+        mcpUrl(b.endpoint, await mcpAllowedOrigins(ctx.db, u.organization_id));
       } catch {
         fail(400, "MCP_URL_DENIED");
       }
@@ -284,7 +287,7 @@ export async function registerExtensions(
           m.endpoint,
           authorization ? "" : token,
           signal,
-          undefined,
+          () => mcpAllowedOrigins(db, u.organization_id),
           false,
           authorization,
         );

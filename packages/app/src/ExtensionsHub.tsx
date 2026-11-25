@@ -182,12 +182,20 @@ export function ExtensionsHub({
       await fn();
       await load();
       await cache.invalidateQueries({ queryKey: ["extensions"] });
-    } catch {
+    } catch (error) {
       setError(
-        s(
-          "Не удалось выполнить действие. Проверьте поля, права и доступность подключения.",
-          "Could not complete the action. Check the fields, permissions and connection.",
-        ),
+        error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "MCP_URL_DENIED"
+          ? s(
+              "Адрес MCP запрещён. Попросите системного администратора разрешить его в Администрирование → MCP.",
+              "MCP origin is blocked. Ask your system administrator to allow it in Administration → MCP.",
+            )
+          : s(
+              "Не удалось выполнить действие. Проверьте поля, права и доступность подключения.",
+              "Could not complete the action. Check the fields, permissions and connection.",
+            ),
       );
     } finally {
       setBusy(false);
@@ -807,8 +815,8 @@ export function ExtensionsHub({
                   onChange={(endpoint) => setMcp({ ...mcp, endpoint })}
                   placeholder="https://example.com/mcp"
                   help={s(
-                    "Публичный HTTPS-адрес без ключа в URL. Внутренние адреса разрешает оператор установки. Перенаправления запрещены.",
-                    "Public HTTPS endpoint without credentials in the URL. Internal origins require operator configuration. Redirects are denied.",
+                    "Публичный HTTPS-адрес без ключа в URL. Локальные адреса разрешает администратор в Администрирование → MCP. Перенаправления запрещены.",
+                    "Public HTTPS endpoint without credentials in the URL. Internal origins require administrator approval in Administration → MCP. Redirects are denied.",
                   )}
                 />
               ) : (

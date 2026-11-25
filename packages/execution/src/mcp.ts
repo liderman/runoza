@@ -73,17 +73,23 @@ export async function mcpDestination(endpoint: string, allowInternal?: string) {
   return { u, address: addresses[0]!.address };
 }
 /** SDK transport fetch with exact-endpoint policy and DNS pinning per request. */
+export type McpOriginPolicy = string | (() => Promise<string>);
 export function pinnedMcpFetch(
   endpoint: string,
   lifetime: AbortSignal,
-  allowInternal?: string,
+  allowInternal?: McpOriginPolicy,
   timeoutMs = 30000,
 ): typeof fetch {
   return async (input, options) => {
     const request = new Request(input, options);
     if (request.url !== new URL(endpoint).href)
       throw new McpError("MCP_URL_DENIED");
-    const { u, address } = await mcpDestination(endpoint, allowInternal);
+    const { u, address } = await mcpDestination(
+      endpoint,
+      typeof allowInternal === "function"
+        ? await allowInternal()
+        : allowInternal,
+    );
     const signal = AbortSignal.any([
       lifetime,
       request.signal,
@@ -185,7 +191,7 @@ export class RemoteMcp {
     endpoint: string,
     token: string,
     private signal: AbortSignal,
-    allowInternal?: string,
+    allowInternal?: McpOriginPolicy,
     private persistent = false,
     authProvider?: AuthProvider,
     onToolsChanged?: () => void,

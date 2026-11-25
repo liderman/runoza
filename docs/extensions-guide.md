@@ -121,7 +121,13 @@ uses PKCE, disposable state, session binding, refresh and generation fence at re
 Rename/disable MCP retains credentials; change identity requires reauthorization. schemas cache
 is also separate for each user.
 
-For internal HTTP origins, the operator specifies `MCP_ALLOWED_INTERNAL_ORIGINS`. Additional
+System administrators can allow exact internal HTTP/HTTPS origins in **Administration → MCP**
+(one origin per line, for example `http://192.168.1.100:9584`, without a path or token).
+The organization-scoped list is stored in the database and applies to saving connections,
+discovery, tool calls and OAuth without a restart. Removing an origin blocks subsequent
+requests, including requests in reused sessions. Existing `MCP_ALLOWED_INTERNAL_ORIGINS`
+entries remain additive and are displayed read-only; remove those in server configuration.
+Migration `035_mcp_network` creates the settings table; deploy matching API and worker builds. Additional
 origins OAuth are resolved explicitly through `MCP_OAUTH_ALLOWED_ORIGINS`; redirect/DNS pinning
 is not disabled. The directory limit is `MCP_CATALOG_MAX_TOOLS` (default 2000). Agent
 search/schema loads only the necessary tools; `mcp_list` returns pages, and the limited output

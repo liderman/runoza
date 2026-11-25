@@ -1,3 +1,8 @@
+export {
+  mcpAllowedOrigins,
+  mcpNetworkSettings,
+  normalizeMcpOrigins,
+} from "./mcp-network.ts";
 import WebSocket from "ws";
 import { inSpan, failure } from "@runoza/telemetry";
 import { desktopScope, desktopLease } from "./desktop.ts";

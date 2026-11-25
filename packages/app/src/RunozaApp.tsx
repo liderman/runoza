@@ -1,3 +1,4 @@
+import { McpNetworkSettings } from "./McpNetworkSettings.tsx";
 import {
   CapabilitiesContext,
   type CapabilityResponse,
@@ -918,6 +919,10 @@ function RunozaAppContent({
                             : "Agent permissions",
                       },
                       {
+                        id: "mcp-network",
+                        title: "MCP",
+                      },
+                      {
                         id: "assistant",
                         title: locale === "ru" ? "Ассистент" : "Assistant",
                       },
@@ -936,6 +941,10 @@ function RunozaAppContent({
               {settingsSection === "permissions" &&
                 session.user.systemAdmin && (
                   <PermissionSettings api={api} locale={locale} />
+                )}
+              {settingsSection === "mcp-network" &&
+                session.user.systemAdmin && (
+                  <McpNetworkSettings api={api} locale={locale} />
                 )}
               {settingsSection === "assistant" && session.user.systemAdmin && (
                 <AssistantSettings api={api} locale={locale} />

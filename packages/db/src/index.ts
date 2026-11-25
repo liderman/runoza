@@ -32,7 +32,8 @@ import { chatMigration } from "./chat-migration.ts";
 import { resourcesMigration } from "./resources-migration.ts";
 import { agentMigration } from "./agent-migration.ts";
 import { workspaceMigration } from "./workspace-migration.ts";
-export const SCHEMA_VERSION = "034_shared_terminal";
+import { mcpNetworkMigration } from "./mcp-network-migration.ts";
+export const SCHEMA_VERSION = "035_mcp_network";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -103,6 +104,7 @@ export const migrations: Record<string, Migration> = {
   "032_mcp_questions": toolInputMigration,
   "033_project_library": projectLibraryMigration,
   "034_shared_terminal": sharedTerminalMigration,
+  "035_mcp_network": mcpNetworkMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({
