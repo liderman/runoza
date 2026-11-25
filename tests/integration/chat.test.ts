@@ -681,13 +681,16 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
           payload,
         );
         assert.equal(r.context_limit, 256000);
+        let runtimeChecked = false;
         await executeRun(db, key, r.id, {
           run: async (input) => {
             assert.equal(input.contextLimit, 256000);
             assert.equal(input.reasoning?.max_tokens, 8192);
             assert.ok(input.instructions.length > 120000);
+            runtimeChecked = true;
           },
         });
+        assert.equal(runtimeChecked, true);
         await call(admin, "/admin/models/settings", "PUT", {
           providerId: provider,
           id: "fixture",
