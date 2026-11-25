@@ -665,7 +665,9 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
             reasoning: null,
           },
         });
-        const c = await call(alice, "/conversations", "POST", {});
+        const c = await call(alice, "/conversations", "POST", {
+          title: "Large pinned catalog",
+        });
         const payload = {
           requestId: randomUUID(),
           providerId: provider,
