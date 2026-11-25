@@ -1,3 +1,4 @@
+export * from "./compaction.ts";
 export {
   contextLimits,
   contextBudget,
@@ -152,6 +153,7 @@ async function* generateInternal(
   systemPrompt?: string,
   reasoning: Record<string, unknown> = {},
   contextLimit?: number | null,
+  contextMessages?: Message[],
 ) {
   const model: Model<"openai-completions"> = {
     id: modelId,
@@ -175,20 +177,22 @@ async function* generateInternal(
     totalTokens: 0,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
   };
-  const messages: Message[] = history.map((m) =>
-    m.role === "user"
-      ? { role: "user", content: m.content, timestamp: Date.now() }
-      : {
-          role: "assistant",
-          content: [{ type: "text", text: m.content }],
-          api: model.api,
-          provider: model.provider,
-          model: model.id,
-          usage,
-          stopReason: "stop",
-          timestamp: Date.now(),
-        },
-  );
+  const messages: Message[] =
+    contextMessages ??
+    history.map((m) =>
+      m.role === "user"
+        ? { role: "user", content: m.content, timestamp: Date.now() }
+        : {
+            role: "assistant",
+            content: [{ type: "text", text: m.content }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage,
+            stopReason: "stop",
+            timestamp: Date.now(),
+          },
+    );
   let done = false;
   for await (const e of streamSimple(
     model,

@@ -44,29 +44,33 @@ export function RunActivity({
         ? `${seconds} ${ru ? "с" : "s"}`
         : `${Math.floor(seconds / 60)} ${ru ? "мин" : "min"} ${seconds % 60} ${ru ? "с" : "s"}`;
   const label =
-    run.status === "queued"
+    active && run.compaction_state === "running"
       ? ru
-        ? "В очереди"
-        : "Queued"
-      : run.status === "running" && run.code_state === "waiting_approval"
+        ? "Сжимает контекст"
+        : "Compacting context"
+      : run.status === "queued"
         ? ru
-          ? "Ждёт разрешения"
-          : "Awaiting approval"
-        : active
+          ? "В очереди"
+          : "Queued"
+        : run.status === "running" && run.code_state === "waiting_approval"
           ? ru
-            ? "Выполняется"
-            : "Working"
-          : run.status === "completed"
+            ? "Ждёт разрешения"
+            : "Awaiting approval"
+          : active
             ? ru
-              ? "Выполнено за"
-              : "Completed in"
-            : run.status === "cancelled"
+              ? "Выполняется"
+              : "Working"
+            : run.status === "completed"
               ? ru
-                ? "Остановлено через"
-                : "Stopped after"
-              : ru
-                ? "Прервано через"
-                : "Interrupted after";
+                ? "Выполнено за"
+                : "Completed in"
+              : run.status === "cancelled"
+                ? ru
+                  ? "Остановлено через"
+                  : "Stopped after"
+                : ru
+                  ? "Прервано через"
+                  : "Interrupted after";
   const summary = `${label} ${duration}`;
   if (
     (ordered || !reasoning?.trim()) &&
@@ -82,6 +86,12 @@ export function RunActivity({
   return (
     <Disclosure summary={summary} expanded={expanded} onUpdate={setExpanded}>
       <Flex direction="column" gap="spacing-3" paddingBlock="spacing-3">
+        {Boolean(run.compaction_count) && (
+          <Text color="secondary">
+            {ru ? "Сжатий контекста: " : "Context compactions: "}
+            {run.compaction_count}
+          </Text>
+        )}
         {Boolean(run.skill_versions?.length) && (
           <Text color="secondary">
             {ru ? "Скиллы: " : "Skills: "}

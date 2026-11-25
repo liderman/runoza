@@ -60,7 +60,7 @@ test("slash applies a manual-only skill with pasted arguments and preserves norm
       </AppDataProvider>
     </Provider>,
   );
-  const input = screen.getByRole("textbox", { name: "Prompt" });
+  const input = screen.getByLabelText("Prompt");
   fireEvent.change(input, { target: { value: "/render-stl part.stl" } });
   await screen.findByRole("option", { name: /render-stl/ });
   fireEvent.keyDown(input, { key: "Enter", isComposing: true });
@@ -76,3 +76,58 @@ test("slash applies a manual-only skill with pasted arguments and preserves norm
   fireEvent.keyDown(input, { key: "Escape" });
   expect(screen.queryByRole("listbox")).toBeNull();
 });
+
+for (const theme of ["light", "dark"] as const)
+  for (const locale of ["en", "ru"] as const) {
+    test(`${theme}/${locale}: compaction is available without skills and preserves focus text`, async () => {
+      const choose = vi.fn(),
+        request = vi.fn();
+      function CompactHarness() {
+        const [prompt, setPrompt] = useState(
+          "/compaction Keep exact entity IDs",
+        );
+        const commands = useSkillCommands({
+          api: { request } as unknown as IdentityClient,
+          conversationId: null,
+          projectId: "",
+          prompt,
+          setPrompt,
+          onChoose: choose,
+          enabled: false,
+          enableCompaction: true,
+          locale,
+        });
+        return (
+          <>
+            <SkillCommandList commands={commands} locale={locale} />
+            <TextArea
+              value={prompt}
+              onUpdate={setPrompt}
+              controlProps={{ ...commands.inputProps, "aria-label": "Prompt" }}
+              onKeyDown={(e) => {
+                commands.onKeyDown(e);
+              }}
+            />
+          </>
+        );
+      }
+      render(
+        <Provider theme={theme}>
+          <AppDataProvider>
+            <CompactHarness />
+          </AppDataProvider>
+        </Provider>,
+      );
+      const input = screen.getByLabelText("Prompt");
+      await screen.findByRole("option", {
+        name: locale === "ru" ? /Сжать контекст/ : /Compact context/,
+      });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect((input as HTMLTextAreaElement).value).toBe(
+        "/compaction Keep exact entity IDs",
+      );
+      expect(choose).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+      expect(screen.queryByRole("listbox")).toBeNull();
+    });
+  }

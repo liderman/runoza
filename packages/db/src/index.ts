@@ -32,8 +32,9 @@ import { chatMigration } from "./chat-migration.ts";
 import { resourcesMigration } from "./resources-migration.ts";
 import { agentMigration } from "./agent-migration.ts";
 import { workspaceMigration } from "./workspace-migration.ts";
+import { compactionMigration } from "./compaction-migration.ts";
 import { mcpNetworkMigration } from "./mcp-network-migration.ts";
-export const SCHEMA_VERSION = "035_mcp_network";
+export const SCHEMA_VERSION = "036_compaction";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -105,6 +106,7 @@ export const migrations: Record<string, Migration> = {
   "033_project_library": projectLibraryMigration,
   "034_shared_terminal": sharedTerminalMigration,
   "035_mcp_network": mcpNetworkMigration,
+  "036_compaction": compactionMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({

@@ -414,11 +414,62 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
             };
           })(),
           runs: (
-            await sql`SELECT id,conversation_id,user_message_id,assistant_message_id,status,error_code,model,provider_id,seq,usage,mode,approval_mode,code_state,skill_versions,mcp_connections,created_at,finished_at,COALESCE(context_limit,(SELECT (m.metadata->>'contextLength')::integer FROM provider_models m WHERE m.provider_id=chat_runs.provider_id AND m.id=chat_runs.model)) AS context_limit,max_agent_steps,EXISTS(SELECT 1 FROM run_dismissals d WHERE d.run_id=chat_runs.id AND d.user_id=${u.id}::uuid) AS dismissed FROM chat_runs WHERE conversation_id=${req.params.id}::uuid ORDER BY created_at`.execute(
+            await sql`SELECT id,conversation_id,user_message_id,assistant_message_id,status,error_code,model,provider_id,seq,usage,mode,approval_mode,code_state,compaction_state,compaction_count,compaction_only,skill_versions,mcp_connections,created_at,finished_at,COALESCE(context_limit,(SELECT (m.metadata->>'contextLength')::integer FROM provider_models m WHERE m.provider_id=chat_runs.provider_id AND m.id=chat_runs.model)) AS context_limit,max_agent_steps,EXISTS(SELECT 1 FROM run_dismissals d WHERE d.run_id=chat_runs.id AND d.user_id=${u.id}::uuid) AS dismissed FROM chat_runs WHERE conversation_id=${req.params.id}::uuid ORDER BY created_at`.execute(
               trx,
             )
           ).rows,
         }));
+    },
+  );
+  app.post<{
+    Params: { id: string };
+    Body: { requestId: string; focus?: string };
+  }>(
+    "/api/v1/conversations/:id/compaction",
+    {
+      schema: {
+        params: idParams,
+        body: object(
+          { requestId: uuid, focus: { type: "string", maxLength: 2000 } },
+          ["requestId"],
+        ),
+      },
+    },
+    async (req) => {
+      const u = await ctx.identity(req);
+      return db.transaction().execute(async (trx) => {
+        await owned(trx, u, req.params.id, true);
+        await chatEnabled(trx, u.organization_id);
+        const existing = (
+          await sql<{
+            run_id: string;
+            focus: string;
+            status: string;
+          }>`SELECT q.run_id,q.focus,q.status FROM compaction_requests q JOIN chat_runs r ON r.id=q.run_id WHERE q.id=${req.body.requestId}::uuid AND q.owner_id=${u.id}::uuid AND r.conversation_id=${req.params.id}::uuid`.execute(
+            trx,
+          )
+        ).rows[0];
+        if (existing) {
+          if (existing.focus !== (req.body.focus ?? ""))
+            fail(409, "IDEMPOTENCY_CONFLICT");
+          return existing;
+        }
+        const run = (
+          await sql<{
+            id: string;
+          }>`SELECT id FROM chat_runs WHERE conversation_id=${req.params.id}::uuid AND owner_id=${u.id}::uuid AND status IN ('queued','running') FOR UPDATE`.execute(
+            trx,
+          )
+        ).rows[0];
+        if (!run) fail(409, "COMPACTION_NO_ACTIVE_RUN");
+        await sql`INSERT INTO compaction_requests(id,owner_id,run_id,focus) VALUES (${req.body.requestId}::uuid,${u.id}::uuid,${run.id}::uuid,${req.body.focus ?? ""})`.execute(
+          trx,
+        );
+        await sql`UPDATE chat_runs SET compaction_state='pending' WHERE id=${run.id}::uuid`.execute(
+          trx,
+        );
+        return { run_id: run.id, status: "pending" };
+      });
     },
   );
   app.get("/api/v1/chat/preferences", async (req) => {

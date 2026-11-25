@@ -29,6 +29,9 @@ export interface ChatMessage {
   created_at: string;
 }
 export interface ChatRun {
+  compaction_state?: string | null;
+  compaction_count?: number;
+  compaction_only?: boolean;
   approval_mode?: "ask" | "arbiter" | "full";
   skill_versions?: { id: string; name: string; version: number }[];
   mcp_connections?: string[];
@@ -58,6 +61,8 @@ export interface ChatRun {
   } | null;
 }
 export interface RunEvent {
+  compaction_state?: string | null;
+  compaction_count?: number;
   parts?: MessagePart[] | null;
   reasoning?: string;
   seq: number;

@@ -76,6 +76,18 @@ export const chatDictionaries = {
     PROVIDERS_NOT_CONFIGURED:
       "The server provider encryption key is not configured.",
     CHAT_DISABLED: "Chat is disabled by your administrator.",
+    COMPACTION_FAILED:
+      "Could not create a complete checkpoint. Original context is preserved. Retry /compaction.",
+    COMPACTION_FIXED_CONTEXT:
+      "Fixed instructions or the current request leave too little room for compaction. Reduce pinned schemas or check model limits.",
+    COMPACTION_NO_GAIN:
+      "The checkpoint did not free enough space. Original context is preserved.",
+    COMPACTION_TOO_LARGE:
+      "The transcript is too large for one compaction. Original history is preserved.",
+    COMPACTION_INVALID_HISTORY:
+      "Compaction is waiting for complete tool results. Original history is preserved.",
+    COMPACTION_NO_ACTIVE_RUN:
+      "The run has already finished. Send /compaction again.",
     RUN_ACTIVE: "This conversation already has a response in progress.",
     MCP_UNAVAILABLE: "The MCP connection is disabled or unavailable.",
     MCP_TOOL_DENIED: "This MCP tool is not allowed by your administrator.",
@@ -200,6 +212,18 @@ export const chatDictionaries = {
     PROVIDERS_NOT_CONFIGURED:
       "На сервере не настроен ключ шифрования провайдеров.",
     CHAT_DISABLED: "Администратор отключил чат.",
+    COMPACTION_FAILED:
+      "Не удалось получить полную сводку. Исходный контекст сохранён. Повторите /compaction.",
+    COMPACTION_FIXED_CONTEXT:
+      "Инструкции или текущий запрос оставляют слишком мало места для сжатия. Уменьшите закреплённые схемы или проверьте лимиты модели.",
+    COMPACTION_NO_GAIN:
+      "Сводка не освободила достаточно места. Исходный контекст сохранён.",
+    COMPACTION_TOO_LARGE:
+      "История слишком велика для одного сжатия. Исходная история сохранена.",
+    COMPACTION_INVALID_HISTORY:
+      "Для сжатия нужны завершённые результаты инструментов. Исходная история сохранена.",
+    COMPACTION_NO_ACTIVE_RUN:
+      "Задание уже завершилось. Отправьте /compaction ещё раз.",
     RUN_ACTIVE: "В этой беседе уже генерируется ответ.",
     MCP_UNAVAILABLE: "MCP-подключение отключено или больше недоступно.",
     MCP_TOOL_DENIED: "Этот MCP-инструмент не разрешён администратором.",

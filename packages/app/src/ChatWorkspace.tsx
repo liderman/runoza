@@ -179,6 +179,8 @@ export function ChatWorkspace({
     prompt,
     setPrompt,
     enabled: capabilities.flags.skills === true,
+    enableCompaction: true,
+    locale,
     onChoose: (id) => setSkillVersionIds((ids) => [...new Set([...ids, id])]),
   });
   const [approvalMode, setApprovalMode] = useState<"ask" | "arbiter" | "full">(
@@ -559,12 +561,33 @@ export function ChatWorkspace({
     };
   }, [id, subscription]);
   // The run ID starts a subscription after a successful POST. Switching chats cancels only the subscriber.
+  const isCompactionPrompt = /^\/compaction(?:\s|$)/.test(prompt.trim());
   async function send(
     content: string,
     retryMessageId?: string,
     parentId?: string | null,
   ) {
-    if (!modelAvailable || approvalUnavailable || busy || active || readOnly)
+    const command =
+      !retryMessageId && /^\/compaction(?:\s+([\s\S]*))?$/.exec(content.trim());
+    if (command && active && id && !busy && !readOnly) {
+      let accepted = false;
+      await action(async () => {
+        await api.request("/conversations/" + id + "/compaction", "POST", {
+          requestId: crypto.randomUUID(),
+          focus: (command[1] ?? "").slice(0, 2000),
+        });
+        await load(id);
+        accepted = true;
+      });
+      return accepted ? undefined : false;
+    }
+    if (
+      !modelAvailable ||
+      (!command && approvalUnavailable) ||
+      busy ||
+      active ||
+      readOnly
+    )
       return false;
     let successful = false;
     await action(async () => {
@@ -606,7 +629,9 @@ export function ChatWorkspace({
       await api
         .request<ChatRun>("/conversations/" + chatId + "/runs", "POST", {
           requestId: pending.current.requestId,
-          ...(executionEnabled ? { executionTarget: "server" } : {}),
+          ...(executionEnabled && !command
+            ? { executionTarget: "server" }
+            : {}),
           providerId,
           model,
           reasoning,
@@ -617,18 +642,21 @@ export function ChatWorkspace({
             ? { retryMessageId }
             : {
                 content,
-                searchProject:
-                  parentId !== undefined
+                searchProject: command
+                  ? false
+                  : parentId !== undefined
                     ? editing?.search_project
                     : searchProject,
-                collectionId:
-                  parentId !== undefined
+                collectionId: command
+                  ? undefined
+                  : parentId !== undefined
                     ? (editing?.search_collection ?? undefined)
                     : searchProject
                       ? collectionId || undefined
                       : undefined,
-                fileIds:
-                  parentId !== undefined
+                fileIds: command
+                  ? []
+                  : parentId !== undefined
                     ? (editing?.attachments ?? []).map((f) => f.id)
                     : fileIds,
                 ...(parentId !== undefined ? { parentId } : {}),
@@ -650,9 +678,11 @@ export function ChatWorkspace({
           throw error;
         });
       pending.current = null;
-      setFileIds([]);
-      setSearchProject(false);
-      setSkillVersionIds([]);
+      if (!command) {
+        setFileIds([]);
+        setSearchProject(false);
+        setSkillVersionIds([]);
+      }
       await load(chatId);
       setSubscription((n) => n + 1);
       await list();
@@ -1501,6 +1531,21 @@ export function ChatWorkspace({
                   })}
                 </Flex>
               )}
+              {active?.compaction_state &&
+                ["pending", "running"].includes(active.compaction_state) && (
+                  <Alert
+                    theme="info"
+                    message={
+                      locale === "ru"
+                        ? active.compaction_state === "pending"
+                          ? "Сжатие запланировано после текущего шага."
+                          : "Сжимаю контекст. История и результаты инструментов сохраняются."
+                        : active.compaction_state === "pending"
+                          ? "Compaction queued after the current step."
+                          : "Compacting context. History and tool results are preserved."
+                    }
+                  />
+                )}
               <SkillCommandList commands={commands} locale={locale} />
               {skillVersionIds.length > 0 && (
                 <Flex gap="spacing-1" wrap="wrap">
@@ -1542,7 +1587,7 @@ export function ChatWorkspace({
                     !e.nativeEvent.isComposing
                   ) {
                     e.preventDefault();
-                    if (prompt.trim() && !active)
+                    if (prompt.trim() && (!active || isCompactionPrompt))
                       void send(prompt).then((ok) => {
                         if (ok !== false) setPrompt("");
                       });
@@ -1781,7 +1826,9 @@ export function ChatWorkspace({
                   <Button
                     view="action"
                     size="l"
-                    aria-label={active ? t("stop") : t("send")}
+                    aria-label={
+                      active && !isCompactionPrompt ? t("stop") : t("send")
+                    }
                     disabled={
                       readOnly ||
                       busy ||
@@ -1791,7 +1838,7 @@ export function ChatWorkspace({
                           !prompt.trim()))
                     }
                     onClick={() => {
-                      if (active)
+                      if (active && !isCompactionPrompt)
                         void action(async () => {
                           await api.request(
                             "/runs/" + active.id + "/cancel",
@@ -1805,7 +1852,11 @@ export function ChatWorkspace({
                         });
                     }}
                   >
-                    <Icon data={active ? CircleStop : ArrowUp} />
+                    <Icon
+                      data={
+                        active && !isCompactionPrompt ? CircleStop : ArrowUp
+                      }
+                    />
                   </Button>
                 </Tooltip>
               </Flex>

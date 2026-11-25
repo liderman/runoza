@@ -96,3 +96,11 @@ and skill instructions, and pinned schemas. Each model request is checked again 
 its actual message/tool payload, including later tool results. Oversized requests are
 rejected without silently dropping pinned tools or truncating the conversation. Errors
 at submission include estimated input, input budget, context window and output reserve.
+
+### Automatic and manual compaction
+
+Use `/compaction` (optionally followed by a focus instruction) to summarize older
+context while preserving the full visible history. During an active run the command
+waits for a safe point. The agent also compacts automatically before its input
+budget is exhausted, including after MCP tool results within one task. See
+[compaction design, persistence and validation](compaction.md).

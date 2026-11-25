@@ -45,6 +45,8 @@ export function useSkillCommands({
   setPrompt,
   onChoose,
   enabled,
+  enableCompaction = false,
+  locale = "en",
 }: {
   api: IdentityClient;
   conversationId: string | null;
@@ -53,12 +55,15 @@ export function useSkillCommands({
   setPrompt: (s: string) => void;
   onChoose: (id: string) => void;
   enabled: boolean;
+  enableCompaction?: boolean;
+  locale?: "en" | "ru";
 }) {
   const [dismissed, setDismissed] = useState<string | null>(null);
   const [active, setActive] = useState<string | null>(null);
   const focusOwner = useListFocusOwner();
   const match = /^\/([a-z0-9:-]*)(?:[ \t]+([^\n]*))?$/i.exec(prompt);
-  const open = enabled && Boolean(match) && dismissed !== prompt;
+  const open =
+    (enabled || enableCompaction) && Boolean(match) && dismissed !== prompt;
   const catalog = useQuery({
     queryKey: ["extensions", "catalog", conversationId, projectId],
     queryFn: ({ signal }) =>
@@ -73,7 +78,7 @@ export function useSkillCommands({
         undefined,
         { signal },
       ),
-    enabled: open,
+    enabled: open && enabled,
     staleTime: 5000,
   });
   const skills = (catalog.data?.extensions ?? []).filter(
@@ -84,13 +89,43 @@ export function useSkillCommands({
       s.versionId &&
       s.manifest?.userInvocable !== false,
   );
-  const items = skills.filter((s) =>
+  const builtins: ExtensionEntry[] = enableCompaction
+    ? [
+        {
+          kind: "skill",
+          id: "builtin:compaction",
+          commandName: "compaction",
+          name: locale === "ru" ? "Сжать контекст" : "Compact context",
+          description:
+            locale === "ru"
+              ? "Сохранить сводку и последние шаги; полная история останется"
+              : "Keep a checkpoint and recent steps; preserve full history",
+          enabled: true,
+          pinned: false,
+          available: true,
+          reason: null,
+          source: "Runóza",
+        },
+      ]
+    : [];
+  const items = [
+    ...builtins,
+    ...skills.filter(
+      (s) => !enableCompaction || s.commandName !== "compaction",
+    ),
+  ].filter((s) =>
     ((s.commandName ?? s.name) + " " + s.name + " " + s.description)
       .toLocaleLowerCase()
       .includes(match?.[1]?.toLocaleLowerCase() ?? ""),
   );
   const select = (id: string) => {
     const item = items.find((s) => s.id === id);
+    if (item?.id === "builtin:compaction") {
+      const next = "/compaction " + (match?.[2] ?? "");
+      setPrompt(next);
+      setDismissed(next);
+      return;
+    }
     if (!item?.versionId) return;
     const next = match?.[2] || "/" + (item.commandName ?? item.name);
     onChoose(item.versionId);
@@ -103,6 +138,8 @@ export function useSkillCommands({
   const { onKeyDown, ...inputProps } = focusOwner.getInputProps();
   return {
     open,
+    loading: enabled && catalog.isPending && !items.length,
+    catalogError: enabled && catalog.isError && !items.length,
     catalog,
     items,
     focusOwner,
@@ -148,12 +185,12 @@ export function SkillCommandList({
         <Flex direction="column" gap="spacing-2">
           <Text variant="caption-2" color="secondary">
             {ru
-              ? "Скиллы · Enter — выбрать, Esc — закрыть"
-              : "Skills · Enter to apply, Esc to dismiss"}
+              ? "Команды · Enter — выбрать, Esc — закрыть"
+              : "Commands · Enter to apply, Esc to dismiss"}
           </Text>
-          {commands.catalog.isPending ? (
+          {commands.loading ? (
             <Text color="secondary">{ru ? "Загрузка…" : "Loading…"}</Text>
-          ) : commands.catalog.isError ? (
+          ) : commands.catalogError ? (
             <Alert
               theme="danger"
               message={
@@ -174,7 +211,7 @@ export function SkillCommandList({
           ) : (
             <List
               style={{ maxHeight: "min(320px, 40dvh)", overflowY: "auto" }}
-              aria-label={ru ? "Скиллы" : "Skills"}
+              aria-label={ru ? "Команды" : "Commands"}
               items={commands.items}
               focusOwner={commands.focusOwner}
               activeItemId={commands.active}
@@ -195,7 +232,8 @@ export function SkillCommandList({
                   }
                   endContent={
                     <Text variant="caption-2" color="secondary">
-                      {item.source} · v{item.version}
+                      {item.source}
+                      {item.version ? " · v" + item.version : ""}
                     </Text>
                   }
                 >

@@ -1,3 +1,4 @@
+import { historyTool } from "./history-tools.ts";
 export const AGENT_SYSTEM_PROMPT =
   "You are Runoza assistant. Answer conversational questions directly without tools. Use tools when the task needs execution or file work. Work in the selected workspace; commands start in its root. This conversation has a persistent workspace: inspect existing files before changing them. Files persist between messages and environment restarts. Attached text is included in conversation; use it to create input files as needed. Server environments can access public HTTP/HTTPS through a restricted proxy. Server Python packages may be installed with python -m pip. Desktop commands run on the selected computer, which may be macOS, Windows or Linux. Inspect the operating system, available interpreters and dependencies before choosing commands. Prefer a workspace virtual environment (python3 -m venv .venv), then its python -m pip; creating a venv bootstraps pip even if the global interpreter lacks pip; never change global Xcode or system settings. Do not hide installation errors with tail. If a command fails, diagnose its output, recover where possible and clearly explain any remaining blocker in the user’s language. Execute commands only through execute; return results with publish_file. Do not claim a command or test succeeded without its result. Actions require user approval, a scoped remembered permission, or approval from the configured independent reviewer. Never claim that your own risk assessment grants permission. Execution has a configured step budget and a one-hour time limit.\n";
 import { skillResource } from "./skill-resource.ts";
@@ -5,7 +6,11 @@ import { createMcpDiscovery } from "./mcp-discovery.ts";
 import { createSkillTools } from "./skill-tools.ts";
 import { attemptAutomaticApproval } from "@runoza/permissions";
 import { inSpan, startSpan, failure } from "@runoza/telemetry";
-import { providerFailureCode, contextBudget } from "@runoza/providers";
+import {
+  providerFailureCode,
+  contextBudget,
+  type ContextMessage,
+} from "@runoza/providers";
 import { mcpConfig, runMcp } from "./mcp-tools.ts";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
@@ -33,6 +38,11 @@ export interface RuntimeInput {
   history: { role: "user" | "assistant"; content: string }[];
   instructions: string;
   contextLimit?: number | null;
+  contextMessages?: ContextMessage[];
+  prepareContext?: (
+    messages: ContextMessage[],
+    onlyPending?: boolean,
+  ) => Promise<ContextMessage[]>;
   reasoning?: Record<string, unknown>;
   signal: AbortSignal;
   onText(text: string): Promise<void>;
@@ -388,7 +398,7 @@ export class PiAgentRuntime implements AgentRuntime {
               await input.onTool?.(action.id);
               return {
                 content: [{ type: "text", text: result.output }],
-                details: {},
+                details: { actionId: action.id },
               };
             }
             const value = mc
@@ -460,7 +470,7 @@ export class PiAgentRuntime implements AgentRuntime {
                     text: "User declined this action. Do not repeat it.",
                   },
                 ],
-                details: {},
+                details: { actionId: a.id },
                 isError: true,
                 terminate: true,
               };
@@ -516,7 +526,7 @@ export class PiAgentRuntime implements AgentRuntime {
                 );
                 return {
                   content: [{ type: "text", text: result.output }],
-                  details: {},
+                  details: { actionId: a.id },
                   isError: result.failed,
                 };
               }
@@ -652,7 +662,7 @@ export class PiAgentRuntime implements AgentRuntime {
                       r.exitCode,
                   },
                 ],
-                details: { fileId },
+                details: { fileId, actionId: a.id },
                 isError: r.exitCode !== 0,
               };
             } catch (e) {
@@ -709,6 +719,7 @@ export class PiAgentRuntime implements AgentRuntime {
                     },
                   ],
                   details: {
+                    actionId: a.id,
                     code,
                     outcome: commandIsUncertain ? "unknown" : "failed",
                   },
@@ -726,6 +737,7 @@ export class PiAgentRuntime implements AgentRuntime {
         ),
     }));
     try {
+      tools.push(historyTool(db, input.id, () => authorized()));
       if (initialScope.flags.mcp && connections.length)
         tools.push(
           ...createMcpDiscovery(
@@ -775,20 +787,22 @@ export class PiAgentRuntime implements AgentRuntime {
         totalTokens: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       };
-      const messages: Message[] = input.history.map((m) =>
-        m.role === "user"
-          ? { role: "user", content: m.content, timestamp: Date.now() }
-          : {
-              role: "assistant",
-              content: [{ type: "text", text: m.content }],
-              api: model.api,
-              provider: model.provider,
-              model: model.id,
-              usage,
-              stopReason: "stop",
-              timestamp: Date.now(),
-            },
-      );
+      const messages: Message[] =
+        input.contextMessages ??
+        input.history.map((m) =>
+          m.role === "user"
+            ? { role: "user", content: m.content, timestamp: Date.now() }
+            : {
+                role: "assistant",
+                content: [{ type: "text", text: m.content }],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage,
+                stopReason: "stop",
+                timestamp: Date.now(),
+              },
+        );
       let turns = 0,
         text = "";
       const agent = new Agent({
@@ -853,9 +867,16 @@ export class PiAgentRuntime implements AgentRuntime {
           );
           return stream;
         },
-        prepareRequest: async () => {
+        prepareRequest: async ({ context }) => {
           await authorized();
           if (++turns > maxSteps) throw new ExecutionError("AGENT_STEP_LIMIT");
+          if (input.prepareContext) {
+            const messages = await input.prepareContext(
+              context.messages as ContextMessage[],
+            );
+            await authorized();
+            return { context: { ...context, messages } };
+          }
         },
       });
       const stop = () => agent.abort();
@@ -920,6 +941,10 @@ export class PiAgentRuntime implements AgentRuntime {
               ? "AGENT_STEP_LIMIT"
               : providerFailureCode(agent.state.errorMessage),
           );
+        await input.prepareContext?.(
+          agent.state.messages as ContextMessage[],
+          true,
+        );
         retain = !uncertainCommand;
         return { usage: measured };
       } finally {

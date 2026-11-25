@@ -1,3 +1,9 @@
+import {
+  addActionHistory,
+  contextSourceHash,
+  restoreContext,
+  contextManager,
+} from "./context.ts";
 import { permissionSettings } from "@runoza/permissions";
 import { currentTraceParent, inSpan, failure } from "@runoza/telemetry";
 export { assistantSettings } from "./assistant-settings.ts";
@@ -30,6 +36,7 @@ import {
   ProviderError,
   contextBudget,
   contextLimits,
+  historyMessages,
 } from "@runoza/providers";
 import type { createJobs } from "@runoza/jobs";
 import type {
@@ -168,15 +175,19 @@ export async function runEvent(
       trx,
     );
     const next = status ?? r.status;
-    if (["completed", "failed", "cancelled"].includes(next))
+    if (["completed", "failed", "cancelled"].includes(next)) {
+      await sql`UPDATE compaction_requests SET status='failed' WHERE run_id=${id}::uuid AND status='pending'`.execute(
+        trx,
+      );
       await sql`DELETE FROM mcp_questions q USING code_actions a WHERE q.action_id=a.id AND a.run_id=${id}::uuid`.execute(
         trx,
       );
+    }
     const seq = r.seq + 1;
     await sql`UPDATE chat_runs SET seq=${seq},status=${next},error_code=${error},usage=${JSON.stringify(usage)}::jsonb,heartbeat_at=now(),finished_at=CASE WHEN ${next} IN ('completed','failed','cancelled') THEN now() ELSE NULL END WHERE id=${id}::uuid`.execute(
       trx,
     );
-    await sql`INSERT INTO run_events(run_id,seq,payload) VALUES (${id}::uuid,${seq},${JSON.stringify({ seq, type, content: text, reasoning: thoughts, parts, status: next, error_code: error, usage })}::jsonb)`.execute(
+    await sql`INSERT INTO run_events(run_id,seq,payload) VALUES (${id}::uuid,${seq},${JSON.stringify({ seq, type, content: text, reasoning: thoughts, parts, status: next, error_code: error, usage, compaction_state: r.compaction_state, compaction_count: r.compaction_count })}::jsonb)`.execute(
       trx,
     );
     return true;
@@ -205,7 +216,13 @@ export async function createRun(
   },
   { useConversationApproval = false } = {},
 ) {
-  if (input.executionTarget === "server") input.mode = "code";
+  const compactionCommand =
+    !input.retryMessageId &&
+    /^\/compaction(?:\s+([\s\S]*))?$/.exec(input.content?.trim() ?? "");
+  if (compactionCommand) {
+    input.mode = "chat";
+    delete input.executionTarget;
+  } else if (input.executionTarget === "server") input.mode = "code";
   const hash = digest(
     JSON.stringify([
       input.mode ?? "chat",
@@ -617,7 +634,9 @@ export async function createRun(
             content:
               (agentMode ? AGENT_SYSTEM_PROMPT : "") + projectInstructions,
           },
-          ...budgetHistory,
+          // Older turns can be compacted by the worker; fixed instructions and
+          // the current user request must fit without deleting either.
+          ...budgetHistory.slice(-1),
         ],
       }),
       limits.contextTokens,
@@ -639,6 +658,10 @@ export async function createRun(
     await sql`UPDATE chat_runs SET extension_manifest=${JSON.stringify({ version: 1, skills: [...skills.map((s) => ({ id: s.id, skillId: s.skill_id, name: s.name, version: s.version, manifest: s.manifest, loaded: true })), ...deferredSkills.map((s) => ({ ...s, loaded: false }))], mcp: mcpSnapshot.map(({ tool_catalog, ...m }) => ({ ...m, pinnedSchemas: pinnedTools.find((p) => p.connectionId === m.id)?.tools ?? [] })) })}::jsonb,deferred_skills=${JSON.stringify(deferredSkills)}::jsonb,approval_mode=${approvalMode},trace_parent=${currentTraceParent()},context_limit=${limits.contextTokens},max_agent_steps=${settings.settings.max_agent_steps},mode=${input.mode ?? "chat"},project_instructions=${projectInstructions},skill_versions=${JSON.stringify(skills.map((s) => ({ id: s.id, name: s.name, version: s.version, manifest: s.manifest, invocation: (input.skillVersionIds ?? []).includes(s.id) ? "manual" : "pinned" })))}::jsonb,mcp_connections=${JSON.stringify(mcpIds)}::jsonb,reasoning_config=${JSON.stringify(reasoning)}::jsonb WHERE id=${r.id}::uuid`.execute(
       trx,
     );
+    if (compactionCommand)
+      await sql`UPDATE chat_runs SET compaction_only=true,compaction_focus=${compactionCommand[1]?.slice(0, 2000) ?? ""} WHERE id=${r.id}::uuid`.execute(
+        trx,
+      );
     await sql`UPDATE conversations SET head_id=${assistant}::uuid,updated_at=now() WHERE id=${c.id}::uuid`.execute(
       trx,
     );
@@ -694,6 +717,8 @@ async function executeRunInternal(
         reasoning_config: Record<string, unknown>;
         deferred_skills: unknown[];
         mcp_connections: string[];
+        compaction_only: boolean;
+        compaction_focus: string;
       }
     >`UPDATE chat_runs SET status='running',lease=${lease}::uuid,heartbeat_at=now() WHERE id=${id}::uuid AND status='queued' RETURNING *`.execute(
       db,
@@ -752,14 +777,22 @@ async function executeRunInternal(
           .map((f) => f.id),
         scope.project_id,
       );
-    await generateTitle(
-      db,
-      providerKey,
-      run.conversation_id,
-      scope.organization_id,
-      history[0]?.content ?? "",
-      controller.signal,
-    );
+    timer = setInterval(() => {
+      void refresh().catch(() => {
+        lost = true;
+        stop();
+      });
+    }, 1000);
+    timer.unref();
+    if (!run.compaction_only)
+      await generateTitle(
+        db,
+        providerKey,
+        run.conversation_id,
+        scope.organization_id,
+        history[0]?.content ?? "",
+        controller.signal,
+      );
     if (scope.project_id && history.at(-1)?.search_project)
       history.at(-1)!.content += await sourceContext(
         db,
@@ -770,13 +803,6 @@ async function executeRunInternal(
     await refresh();
     if (lost) throw new ProviderError("RUN_CANCELLED");
     await runEvent(db, id, "run.started", "", undefined, null, null, lease);
-    timer = setInterval(() => {
-      void refresh().catch(() => {
-        lost = true;
-        stop();
-      });
-    }, 1000);
-    timer.unref();
     const signal = AbortSignal.any([
       controller.signal,
       AbortSignal.timeout(run.mode === "code" ? 3600000 : 600000),
@@ -785,6 +811,67 @@ async function executeRunInternal(
       ...p,
       key: secretBox(providerKey).open(p.secret_ciphertext, "provider:" + p.id),
     };
+    await addActionHistory(db, history);
+    const sourceHash = contextSourceHash(history, run.project_instructions);
+    const contextHistory = run.compaction_only ? history.slice(0, -1) : history;
+    const restored = await restoreContext(
+      db,
+      run.conversation_id,
+      run.owner_id,
+      contextHistory,
+      run.project_instructions,
+      run.model,
+    );
+    const prepareContext = contextManager({
+      db,
+      runId: id,
+      lease,
+      owner: run.owner_id,
+      conversation: run.conversation_id,
+      anchor: run.user_message_id,
+      sourceHash,
+      model: run.model,
+      contextLimit: run.context_limit ?? 131072,
+      reasoning: run.reasoning_config,
+      connection: c,
+      signal,
+      authorize: async () => {
+        await refresh();
+        if (lost) throw new ProviderError("RUN_CANCELLED");
+      },
+      notify: (type) =>
+        runEvent(db, id, type, undefined, undefined, null, null, lease),
+    });
+    if (run.compaction_only) {
+      const manualContext: import("@runoza/providers").ContextMessage[] = [
+        {
+          role: "system",
+          content: run.project_instructions,
+          timestamp: Date.now(),
+        },
+        ...restored,
+      ];
+      const prepared = await prepareContext(
+        manualContext,
+        true,
+        run.compaction_focus,
+      );
+      content =
+        prepared === manualContext
+          ? "Compaction: context unchanged. / Контекст не изменён."
+          : "Compaction finished. Full history is preserved. / Сжатие контекста завершено. Полная история сохранена.";
+      await runEvent(
+        db,
+        id,
+        "run.completed",
+        content,
+        "completed",
+        null,
+        null,
+        lease,
+      );
+      return;
+    }
     if (
       run.mode === "code" ||
       run.deferred_skills?.length ||
@@ -798,6 +885,9 @@ async function executeRunInternal(
         history,
         instructions: run.project_instructions,
         contextLimit: run.context_limit,
+        contextMessages: restored,
+        prepareContext: (messages, onlyPending) =>
+          prepareContext(messages, false, "", onlyPending),
         reasoning: run.reasoning_config,
         maxSteps: run.max_agent_steps,
         onTool: async (actionId) => {
@@ -862,6 +952,14 @@ async function executeRunInternal(
       );
       return;
     }
+    const plainContext = await prepareContext([
+      {
+        role: "system",
+        content: run.project_instructions,
+        timestamp: Date.now(),
+      },
+      ...restored,
+    ]);
     let completed = false;
     let lastKind: "thinking" | "delta" | undefined;
     for await (const event of generate(
@@ -872,6 +970,7 @@ async function executeRunInternal(
       run.project_instructions,
       run.reasoning_config,
       run.context_limit,
+      plainContext.filter((m) => m.role !== "system"),
     )) {
       if (lost) throw new ProviderError("RUN_CANCELLED");
       // Flush the previous kind before changing channels; otherwise buffered text
@@ -937,6 +1036,15 @@ async function executeRunInternal(
           lastFlush = Date.now();
         }
       } else {
+        await prepareContext(
+          [
+            ...plainContext,
+            ...historyMessages([{ role: "assistant", content }], run.model),
+          ],
+          false,
+          "",
+          true,
+        );
         completed = true;
         await runEvent(
           db,
