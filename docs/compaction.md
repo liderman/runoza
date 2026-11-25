@@ -90,7 +90,9 @@ exhaustion and continued agent execution without repeated side effects. Integrat
 tests exercise durable checkpoints, branch/owner boundaries, queued requests,
 idempotency and unchanged original history. UI tests cover both themes and languages.
 
-After a run, earlier action outputs are represented by bounded head/tail excerpts
+Large new tool results are saved in [conversation files](tool-result-files.md); future
+context contains their file reference. After a run, earlier action outputs without
+a saved file reference are represented by bounded head/tail excerpts
 with an explicit omission marker and original size. The full result remains in the
 journal and can be read through `history_read`; this avoids loading arbitrarily
 large historical command output into every subsequent request.

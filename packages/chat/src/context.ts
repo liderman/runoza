@@ -22,7 +22,7 @@ export async function addActionHistory(db: Database, history: ChatMessage[]) {
       output: string;
       status: string;
       output_chars: number;
-    }>`SELECT r.assistant_message_id,a.id,a.tool,a.input,CASE WHEN length(a.output)>30000 THEN left(a.output,12000) || E'\n[Middle omitted from working context; use history_read with this action ID for the saved result.]\n' || right(a.output,12000) ELSE a.output END AS output,a.status,length(a.output)::integer AS output_chars FROM code_actions a JOIN chat_runs r ON r.id=a.run_id WHERE r.assistant_message_id IN (${sql.join(history.map((m) => sql`${m.id}::uuid`))}) ORDER BY a.created_at,a.id`.execute(
+    }>`SELECT r.assistant_message_id,a.id,a.tool,CASE WHEN length(a.input)>2000 THEN left(a.input,2000) || E'\n[Remaining tool arguments omitted from working context.]' ELSE a.input END AS input,CASE WHEN a.context_output IS NOT NULL THEN a.context_output WHEN length(a.output)>30000 THEN left(a.output,12000) || E'\n[Middle omitted from working context; use history_read with this action ID for the saved result.]\n' || right(a.output,12000) ELSE a.output END AS output,a.status,length(a.output)::integer AS output_chars FROM code_actions a JOIN chat_runs r ON r.id=a.run_id WHERE r.assistant_message_id IN (${sql.join(history.map((m) => sql`${m.id}::uuid`))}) ORDER BY a.created_at,a.id`.execute(
       db,
     )
   ).rows;

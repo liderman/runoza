@@ -296,19 +296,5 @@ export async function runMcp(
       cached: true,
     };
   }
-  const serialized = JSON.stringify(result);
-
-  return {
-    output:
-      serialized.length <= 30000
-        ? serialized
-        : JSON.stringify({
-            truncated: true,
-            originalChars: serialized.length,
-            text: serialized.slice(0, 26000),
-            message:
-              "Tool output exceeds the response budget. Narrow the request to retrieve a smaller result.",
-          }),
-    failed: Boolean(result.isError),
-  };
+  return { output: JSON.stringify(result), failed: Boolean(result.isError) };
 }

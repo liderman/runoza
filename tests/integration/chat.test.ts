@@ -578,7 +578,19 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
             db,
           );
           const count = calls;
-          await delay(1400);
+          // A sweep may need more than one interval when the DB is remote or busy.
+          // Observe its durable result instead of racing a fixed 1.4-second sleep.
+          for (let i = 0; i < 50; i++) {
+            const row = (
+              await sql<{
+                error_code: string | null;
+              }>`SELECT error_code FROM chat_runs WHERE id=${stale.id}::uuid`.execute(
+                db,
+              )
+            ).rows[0]!;
+            if (row.error_code) break;
+            await delay(200);
+          }
           assert.equal(
             (
               await sql<{

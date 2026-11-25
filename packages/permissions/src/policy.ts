@@ -24,6 +24,20 @@ export function eligibleForFullAccess(tool: string, input: string) {
 }
 export function eligibleForArbiter(tool: string, input: string) {
   if (tool === "read_file") return safeRelativePath(input);
+  if (tool === "files_export") {
+    try {
+      const a = JSON.parse(input);
+      return (
+        typeof a.path === "string" &&
+        a.path.startsWith("runoza-files/") &&
+        safeRelativePath(a.path) &&
+        safeRelativePath(a.destination) &&
+        (a.expectedHash === null || /^[a-f0-9]{64}$/.test(a.expectedHash))
+      );
+    } catch {
+      return false;
+    }
+  }
   if (tool === "write_file") {
     try {
       const a = JSON.parse(input);

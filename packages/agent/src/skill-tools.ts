@@ -208,7 +208,7 @@ export function createSkillTools(
       await onTool?.(action.id);
       return {
         content: [{ type: "text", text: JSON.stringify(result) }],
-        details: {},
+        details: { actionId: action.id },
       };
     },
   }));

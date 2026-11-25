@@ -623,16 +623,13 @@ export async function createRun(
       discoveryContext +
       schemaContext +
       skillContext;
-    const agentMode =
-      input.mode === "code" || mcpIds.length > 0 || deferredSkills.length > 0;
     const budget = contextBudget(
       input.model,
       JSON.stringify({
         messages: [
           {
             role: "system",
-            content:
-              (agentMode ? AGENT_SYSTEM_PROMPT : "") + projectInstructions,
+            content: AGENT_SYSTEM_PROMPT + projectInstructions,
           },
           // Older turns can be compacted by the worker; fixed instructions and
           // the current user request must fit without deleting either.
@@ -873,6 +870,7 @@ async function executeRunInternal(
       return;
     }
     if (
+      runtime ||
       run.mode === "code" ||
       run.deferred_skills?.length ||
       run.mcp_connections?.length

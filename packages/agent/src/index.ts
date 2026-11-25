@@ -1,6 +1,8 @@
+import { agentFiles, createFileTools } from "./agent-files.ts";
+import { limitToolResult, resultText, textPage } from "./result-budget.ts";
 import { historyTool } from "./history-tools.ts";
 export const AGENT_SYSTEM_PROMPT =
-  "You are Runoza assistant. Answer conversational questions directly without tools. Use tools when the task needs execution or file work. Work in the selected workspace; commands start in its root. This conversation has a persistent workspace: inspect existing files before changing them. Files persist between messages and environment restarts. Attached text is included in conversation; use it to create input files as needed. Server environments can access public HTTP/HTTPS through a restricted proxy. Server Python packages may be installed with python -m pip. Desktop commands run on the selected computer, which may be macOS, Windows or Linux. Inspect the operating system, available interpreters and dependencies before choosing commands. Prefer a workspace virtual environment (python3 -m venv .venv), then its python -m pip; creating a venv bootstraps pip even if the global interpreter lacks pip; never change global Xcode or system settings. Do not hide installation errors with tail. If a command fails, diagnose its output, recover where possible and clearly explain any remaining blocker in the user’s language. Execute commands only through execute; return results with publish_file. Do not claim a command or test succeeded without its result. Actions require user approval, a scoped remembered permission, or approval from the configured independent reviewer. Never claim that your own risk assessment grants permission. Execution has a configured step budget and a one-hour time limit.\n";
+  "You are Runoza assistant. Answer conversational questions directly without tools. Use tools when the task needs execution or file work. Work in the selected workspace; commands start in its root. This conversation has a persistent workspace: inspect existing files before changing them. Files persist between messages and environment restarts. Attached text is included in conversation; use it to create input files as needed. Server environments can access public HTTP/HTTPS through a restricted proxy. Server Python packages may be installed with python -m pip. Desktop commands run on the selected computer, which may be macOS, Windows or Linux. Inspect the operating system, available interpreters and dependencies before choosing commands. Prefer a workspace virtual environment (python3 -m venv .venv), then its python -m pip; creating a venv bootstraps pip even if the global interpreter lacks pip; never change global Xcode or system settings. Do not hide installation errors with tail. If a command fails, diagnose its output, recover where possible and clearly explain any remaining blocker in the user’s language. Use files_list/read/search/create/write/delete for persistent conversation scratch files even without code execution. Tool responses above 50000 characters are saved completely under virtual runoza-files/ paths. Read small pages or search relevant passages, not the whole file. Virtual paths are not shell paths: use files_export in code mode to copy to the selected workspace, then grep/jq or other commands with bounded output. Never repeat a state-changing tool just to recover its output. Execute commands only through execute; return results with publish_file. Do not claim a command or test succeeded without its result. Workspace execution, workspace file changes, exports and MCP calls require user approval, a scoped remembered permission, the configured full-access mode, or approval from the independent reviewer. Conversation scratch-file operations and metadata reads do not require an execution environment or host permission. Never claim that your own risk assessment grants permission. Execution has a configured step budget and a one-hour time limit.\n";
 import { skillResource } from "./skill-resource.ts";
 import { createMcpDiscovery } from "./mcp-discovery.ts";
 import { createSkillTools } from "./skill-tools.ts";
@@ -223,9 +225,10 @@ export class PiAgentRuntime implements AgentRuntime {
       )
     ).rows;
     const initialScope = await authorized();
+    const files = agentFiles(db, input.id, () => authorized());
     const tools: AgentTool[] = [
       ...(initialScope.mode === "code" && initialScope.flags.code
-        ? ["execute", "publish_file", "read_file", "write_file"]
+        ? ["execute", "publish_file", "read_file", "write_file", "files_export"]
         : []),
       ...(initialScope.mode === "code" &&
       initialScope.flags.code &&
@@ -238,15 +241,17 @@ export class PiAgentRuntime implements AgentRuntime {
       label: name,
       description: name.startsWith("mcp_")
         ? "Use mcp_search to find enabled connections and tools, then mcp_schema or mcp_list for schemas before mcp_call. Execution requires approval; metadata never grants permission."
-        : name === "skills_copy"
-          ? "Copy one enabled skill package resource to a relative workspace destination. Supports binary assets up to 10 MiB. Parent directories must exist. expectedHash=null creates a new file; use the current destination hash to replace. Copying never executes the file and requires approval."
-          : name === "execute"
-            ? "Run a shell command in the selected workspace. Each call requires user approval. Maximum 60 seconds; command 65536 characters. Use write_file for file contents."
-            : name === "write_file"
-              ? "Write UTF-8 content directly to a relative file. Up to 60000 UTF-8 bytes per chunk, 1 MiB total. expectedHash=null creates a new file; use read_file SHA-256 to replace or append. For larger content use multiple append=true chunks with the latest hash. Requires approval."
-              : name === "read_file"
-                ? "Read a relative workspace file and its SHA-256 for conflict-safe edits. Up to 1 MiB; text output is truncated to 30000 characters. Requires approval."
-                : "Save a relative regular workspace file as a downloadable artifact. Maximum 1 MiB. Requires approval.",
+        : name === "files_export"
+          ? "Copy a virtual conversation file to a relative workspace destination for grep/jq or other code tools. Source path begins runoza-files/. Requires approval. Up to 10 MiB. expectedHash=null creates a new file; use the destination hash to replace. Parent directories must already exist."
+          : name === "skills_copy"
+            ? "Copy one enabled skill package resource to a relative workspace destination. Supports binary assets up to 10 MiB. Parent directories must exist. expectedHash=null creates a new file; use the current destination hash to replace. Copying never executes the file and requires approval."
+            : name === "execute"
+              ? "Run a shell command in the selected workspace. Each call requires user approval. Maximum 60 seconds; command 65536 characters. Use write_file for file contents."
+              : name === "write_file"
+                ? "Write UTF-8 content directly to a relative file. Up to 60000 UTF-8 bytes per chunk, 1 MiB total. expectedHash=null creates a new file; use read_file SHA-256 to replace or append. For larger content use multiple append=true chunks with the latest hash. Requires approval."
+                : name === "read_file"
+                  ? "Read a relative workspace file and its SHA-256 for conflict-safe edits. Up to 1 MiB; returns a bounded page with nextOffset (UTF-16 characters), total size and hash. Requires approval."
+                  : "Save a relative regular workspace file as a downloadable artifact. Maximum 1 MiB. Requires approval.",
       parameters: name.startsWith("mcp_")
         ? {
             type: "object",
@@ -264,13 +269,12 @@ export class PiAgentRuntime implements AgentRuntime {
                 : ["connectionId"],
             additionalProperties: false,
           }
-        : name === "skills_copy"
+        : name === "files_export"
           ? {
               type: "object",
               properties: {
-                versionId: { type: "string" },
-                path: { type: "string", maxLength: 512 },
-                destination: { type: "string", maxLength: 512 },
+                path: { type: "string", maxLength: 200 },
+                destination: { type: "string", maxLength: 200 },
                 expectedHash: {
                   anyOf: [
                     { type: "null" },
@@ -278,49 +282,71 @@ export class PiAgentRuntime implements AgentRuntime {
                   ],
                 },
               },
-              required: ["versionId", "path", "destination", "expectedHash"],
+              required: ["path", "destination", "expectedHash"],
               additionalProperties: false,
             }
-          : name === "write_file"
+          : name === "skills_copy"
             ? {
                 type: "object",
                 properties: {
-                  path: { type: "string", maxLength: 200 },
-                  content: { type: "string", maxLength: 60000 },
+                  versionId: { type: "string" },
+                  path: { type: "string", maxLength: 512 },
+                  destination: { type: "string", maxLength: 512 },
                   expectedHash: {
                     anyOf: [
-                      { type: "string", pattern: "^[a-f0-9]{64}$" },
                       { type: "null" },
+                      { type: "string", pattern: "^[a-f0-9]{64}$" },
                     ],
                   },
-                  append: { type: "boolean" },
                 },
-                required: ["path", "content", "expectedHash"],
+                required: ["versionId", "path", "destination", "expectedHash"],
                 additionalProperties: false,
               }
-            : {
-                type: "object",
-                properties: {
-                  [name === "execute" ? "command" : "path"]: {
-                    type: "string",
-                    minLength: 1,
-                    maxLength: name === "execute" ? 65536 : 200,
+            : name === "write_file"
+              ? {
+                  type: "object",
+                  properties: {
+                    path: { type: "string", maxLength: 200 },
+                    content: { type: "string", maxLength: 60000 },
+                    expectedHash: {
+                      anyOf: [
+                        { type: "string", pattern: "^[a-f0-9]{64}$" },
+                        { type: "null" },
+                      ],
+                    },
+                    append: { type: "boolean" },
                   },
+                  required: ["path", "content", "expectedHash"],
+                  additionalProperties: false,
+                }
+              : {
+                  type: "object",
+                  properties: {
+                    [name === "execute" ? "command" : "path"]: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: name === "execute" ? 65536 : 200,
+                    },
+                    ...(name === "read_file"
+                      ? {
+                          offset: { type: "integer", minimum: 0 },
+                          limit: {
+                            type: "integer",
+                            minimum: 2,
+                            maximum: 20000,
+                          },
+                        }
+                      : {}),
+                  },
+                  required: [name === "execute" ? "command" : "path"],
+                  additionalProperties: false,
                 },
-                required: [name === "execute" ? "command" : "path"],
-                additionalProperties: false,
-              },
       replay: "never",
       execute: async (_toolCallId, args) =>
         inSpan(
           "agent.tool",
           { "runoza.tool": name, "runoza.run_id": input.id },
           async () => {
-            if (++calls > maxSteps * 4) {
-              fatal = "AGENT_STEP_LIMIT";
-              controller.abort();
-              throw new ExecutionError(fatal);
-            }
             await authorized(name.startsWith("mcp_") ? "mcp" : "code");
             const resourceArgs = args as {
               versionId: string;
@@ -337,6 +363,10 @@ export class PiAgentRuntime implements AgentRuntime {
                     resourceArgs.versionId,
                     resourceArgs.path,
                   )
+                : undefined;
+            const exportFile =
+              name === "files_export"
+                ? await files.read((args as { path: string }).path)
                 : undefined;
             const mc = name.startsWith("mcp_")
               ? await mcpConfig(
@@ -421,11 +451,19 @@ export class PiAgentRuntime implements AgentRuntime {
                       size: Number(resource.size),
                     },
                   })
-                : name === "write_file"
-                  ? JSON.stringify(args)
-                  : (args as { command?: string; path?: string })[
-                      name === "execute" ? "command" : "path"
-                    ]!;
+                : exportFile
+                  ? JSON.stringify({
+                      ...(args as object),
+                      source: {
+                        sha256: exportFile.sha256,
+                        bytes: exportFile.size,
+                      },
+                    })
+                  : name === "write_file"
+                    ? JSON.stringify(args)
+                    : (args as { command?: string; path?: string })[
+                        name === "execute" ? "command" : "path"
+                      ]!;
 
             const a = (
               await sql<{
@@ -581,6 +619,32 @@ export class PiAgentRuntime implements AgentRuntime {
                   }),
                   exitCode: 0,
                 };
+              } else if (name === "files_export") {
+                const a = args as {
+                  path: string;
+                  destination: string;
+                  expectedHash: string | null;
+                };
+                const file = await files.read(a.path);
+                if (file.sha256 !== exportFile!.sha256)
+                  throw new ExecutionError("FILE_CONFLICT");
+                await installResource(
+                  lease!.executor,
+                  a.destination,
+                  file.content,
+                  a.expectedHash,
+                  signal,
+                );
+                r = {
+                  output: JSON.stringify({
+                    path: a.destination,
+                    source: a.path,
+                    sha256: file.sha256,
+                    bytes: file.size,
+                    exported: true,
+                  }),
+                  exitCode: 0,
+                };
               } else if (name === "write_file") {
                 const a = args as {
                   path: string;
@@ -603,12 +667,24 @@ export class PiAgentRuntime implements AgentRuntime {
                   exitCode: 0,
                 };
               } else if (name === "read_file") {
-                const file = await lease!.executor.readFile(value, signal);
+                const a = args as {
+                  path: string;
+                  offset?: number;
+                  limit?: number;
+                };
+                const file = await lease!.executor.readFile(a.path, signal);
                 r = {
                   output: JSON.stringify({
                     sha256: file.sha256,
-                    content: file.content?.slice(0, 30000),
-                    truncated: (file.content?.length ?? 0) > 30000,
+                    size: Buffer.from(file.base64, "base64").length,
+                    chars: file.content?.length ?? null,
+                    ...(file.content === null
+                      ? {
+                          binary: true,
+                          message:
+                            "Use a bounded code tool to inspect this binary file.",
+                        }
+                      : textPage(file.content, a.offset, a.limit)),
                   }),
                   exitCode: 0,
                 };
@@ -657,7 +733,7 @@ export class PiAgentRuntime implements AgentRuntime {
                     type: "text",
                     text:
                       (r.environment ? r.environment + "\n" : "") +
-                      output.slice(-30000) +
+                      output +
                       "\nExit code: " +
                       r.exitCode,
                   },
@@ -679,9 +755,12 @@ export class PiAgentRuntime implements AgentRuntime {
                 (name === "read_file" ||
                   name === "write_file" ||
                   name === "publish_file" ||
-                  name === "skills_copy") &&
+                  name === "skills_copy" ||
+                  name === "files_export") &&
                 ([
                   "FILE_PATH",
+                  "FILE_RANGE",
+                  "FILE_UNAVAILABLE",
                   "FILE_CONFLICT",
                   "FILE_CHUNK_SIZE",
                   "FILE_SIZE",
@@ -713,8 +792,7 @@ export class PiAgentRuntime implements AgentRuntime {
                       text:
                         explanation +
                         (saved.rows[0]?.output
-                          ? "\n\nRecorded output:\n" +
-                            saved.rows[0].output.slice(-30000)
+                          ? "\n\nRecorded output:\n" + saved.rows[0].output
                           : ""),
                     },
                   ],
@@ -737,7 +815,10 @@ export class PiAgentRuntime implements AgentRuntime {
         ),
     }));
     try {
-      tools.push(historyTool(db, input.id, () => authorized()));
+      tools.push(
+        historyTool(db, input.id, () => authorized()),
+        ...createFileTools(files),
+      );
       if (initialScope.flags.mcp && connections.length)
         tools.push(
           ...createMcpDiscovery(
@@ -758,6 +839,79 @@ export class PiAgentRuntime implements AgentRuntime {
             input.onTool,
           ),
         );
+      // One result boundary for every tool, including metadata, files and errors.
+      const boundedTools = tools.map((tool) =>
+        limitToolResult(
+          {
+            ...tool,
+            execute: async (...args) => {
+              await authorized();
+              if (++calls > maxSteps * 4) {
+                fatal = "AGENT_STEP_LIMIT";
+                controller.abort();
+                throw new ExecutionError(fatal);
+              }
+              let result: Awaited<ReturnType<AgentTool["execute"]>>;
+              try {
+                result = await tool.execute(...args);
+              } catch (error) {
+                if (signal.aborted || fatal) throw error;
+                // Pi would otherwise construct an unbounded error tool result
+                // outside our response boundary. Keep failures on the same path.
+                result = {
+                  content: [
+                    {
+                      type: "text",
+                      text:
+                        error instanceof Error ? error.message : String(error),
+                    },
+                  ],
+                  details: {},
+                  isError: true,
+                };
+              }
+              await authorized();
+              const details = (result.details ?? {}) as Record<string, unknown>;
+              if (typeof details.actionId !== "string") {
+                const a = (
+                  await sql<{
+                    id: string;
+                  }>`INSERT INTO code_actions(run_id,tool,input,status,output) VALUES (${input.id}::uuid,${tool.name},${JSON.stringify(args[1])},${result.isError ? "failed" : "completed"},${resultText(result)}) RETURNING id`.execute(
+                    db,
+                  )
+                ).rows[0]!;
+                await input.onTool?.(a.id);
+                return { ...result, details: { ...details, actionId: a.id } };
+              }
+              return result;
+            },
+          },
+          async (text, result) => {
+            const actionId = (result.details as { actionId: string }).actionId;
+            try {
+              return await files.spill(text, actionId);
+            } catch (error) {
+              await authorized();
+              if (
+                !(error instanceof ExecutionError) ||
+                !["FILE_QUOTA", "FILE_SIZE"].includes(error.code)
+              )
+                throw error;
+              const notice = JSON.stringify({
+                message:
+                  "The tool already returned; do not repeat it. Its complete output is in the action journal, but conversation file storage reached its limit. Use history_read with this actionId and offset to read bounded pages, or delete unneeded conversation files.",
+                actionId,
+                originalChars: text.length,
+                error: error.code,
+              });
+              await sql`UPDATE code_actions SET context_output=${notice} WHERE id=${actionId}::uuid AND run_id=${input.id}::uuid`.execute(
+                db,
+              );
+              return notice;
+            }
+          },
+        ),
+      );
       await authorized();
       await state("running");
       const model: Model<"openai-completions"> = {
@@ -808,7 +962,7 @@ export class PiAgentRuntime implements AgentRuntime {
       const agent = new Agent({
         initialState: {
           model,
-          tools,
+          tools: boundedTools,
           systemPrompt: AGENT_SYSTEM_PROMPT + input.instructions,
         },
         toolExecution: "sequential",

@@ -34,7 +34,8 @@ import { agentMigration } from "./agent-migration.ts";
 import { workspaceMigration } from "./workspace-migration.ts";
 import { compactionMigration } from "./compaction-migration.ts";
 import { mcpNetworkMigration } from "./mcp-network-migration.ts";
-export const SCHEMA_VERSION = "036_compaction";
+import { agentFilesMigration } from "./agent-files-migration.ts";
+export const SCHEMA_VERSION = "037_agent_files";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -107,6 +108,7 @@ export const migrations: Record<string, Migration> = {
   "034_shared_terminal": sharedTerminalMigration,
   "035_mcp_network": mcpNetworkMigration,
   "036_compaction": compactionMigration,
+  "037_agent_files": agentFilesMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({
