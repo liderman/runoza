@@ -95,7 +95,7 @@ export const chatDictionaries = {
     MODEL_TOOLS_UNSUPPORTED:
       "This model does not support tools. Choose another enabled model.",
     EXTENSION_CONTEXT_LIMIT:
-      "Pinned extension schemas exceed the context budget. Unpin some tools.",
+      "Input including pinned schemas exceeds the model token budget after reserving the response. Reduce history/schemas or check model context and output settings.",
     MCP_INVALID: "The MCP server returned an invalid response.",
     MCP_OUTPUT_LIMIT: "The MCP response is too large.",
     MCP_TOOL_LIMIT: "The MCP server exposes too many tools.",
@@ -104,7 +104,7 @@ export const chatDictionaries = {
     RUN_LIMIT:
       "The concurrent response limit has been reached. Wait or stop one. An administrator can change the limit in assistant settings.",
     CONTEXT_LIMIT:
-      "The conversation exceeds the context limit. Start a new conversation.",
+      "The input exceeds the model token budget after reserving the response. Reduce history or check the model context and output settings.",
     HISTORY_LIMIT: "This conversation has reached its message limit.",
     OUTPUT_LIMIT:
       "The response reached the size limit. Try a lower reasoning effort or a smaller task.",
@@ -220,7 +220,7 @@ export const chatDictionaries = {
     MODEL_TOOLS_UNSUPPORTED:
       "Модель не поддерживает инструменты. Выберите другую включённую модель.",
     EXTENSION_CONTEXT_LIMIT:
-      "Закреплённые схемы расширений превышают бюджет контекста. Открепите часть инструментов.",
+      "Вход вместе с закреплёнными схемами превышает бюджет токенов модели с учётом ответа. Сократите историю/схемы или проверьте настройки контекста и ответа модели.",
     MCP_INVALID: "MCP-сервер вернул некорректный ответ.",
     MCP_OUTPUT_LIMIT: "Ответ MCP превышает допустимый размер.",
     MCP_TOOL_LIMIT: "Сервер MCP возвращает слишком много инструментов.",
@@ -228,7 +228,8 @@ export const chatDictionaries = {
     SKILL_LIMIT: "Выбрано слишком много инструкций. Уменьшите число скиллов.",
     RUN_LIMIT:
       "Достигнут лимит одновременных ответов. Дождитесь завершения или остановите один. Администратор может изменить лимит в настройках ассистента.",
-    CONTEXT_LIMIT: "Превышен лимит контекста беседы. Начните новую.",
+    CONTEXT_LIMIT:
+      "Вход превышает бюджет токенов модели с учётом ответа. Сократите историю или проверьте настройки контекста и ответа модели.",
     HISTORY_LIMIT: "Достигнут лимит сообщений беседы.",
     OUTPUT_LIMIT:
       "Достигнут лимит ответа. Попробуйте снизить усилие рассуждений или разбить задачу.",

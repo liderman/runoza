@@ -185,9 +185,13 @@ export function createApp(
     request.log.warn({ event: "request_failed", requestId: request.id });
     if (error instanceof AuthError) {
       if (error.status === 429) reply.header("Retry-After", "600");
-      return reply
-        .code(error.status)
-        .send({ code: error.code, requestId: request.id });
+      return reply.code(error.status).send({
+        code: error.code,
+        requestId: request.id,
+        ...(["CONTEXT_LIMIT", "EXTENSION_CONTEXT_LIMIT"].includes(error.code)
+          ? { details: error.details }
+          : {}),
+      });
     }
     const invalid =
       typeof error === "object" && error !== null && "validation" in error;

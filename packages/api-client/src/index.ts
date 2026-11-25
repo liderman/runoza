@@ -3,6 +3,7 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly requestId: string | null,
+    readonly details?: Record<string, unknown>,
   ) {
     super(`API request failed (${status})`);
   }
@@ -42,6 +43,7 @@ export class IdentityApiError extends Error {
     readonly status: number,
     readonly code: string,
     readonly requestId: string | null,
+    readonly details?: Record<string, unknown>,
   ) {
     super(code);
   }
@@ -151,6 +153,7 @@ export function createIdentityClient(
           response.status,
           typeof value.code === "string" ? value.code : "INTERNAL_ERROR",
           response.headers.get("x-request-id"),
+          value.details,
         );
       return value as T;
     },

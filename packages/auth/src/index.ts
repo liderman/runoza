@@ -16,12 +16,17 @@ export class AuthError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
+    readonly details?: Record<string, unknown>,
   ) {
     super(code);
   }
 }
-export function fail(status: number, code: string): never {
-  throw new AuthError(status, code);
+export function fail(
+  status: number,
+  code: string,
+  details?: Record<string, unknown>,
+): never {
+  throw new AuthError(status, code, details);
 }
 export async function passwordHash(password: string) {
   if (password.length < 12 || password.length > 128)

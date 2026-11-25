@@ -629,6 +629,95 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
       },
     );
     await t.test(
+      "large pinned catalogs share the model token budget and reserve output",
+      async () => {
+        await sql`UPDATE feature_flags SET flags=flags || '{"mcp":true}'::jsonb WHERE organization_id=${org}::uuid`.execute(
+          db,
+        );
+        const tools = Array.from({ length: 77 }, (_, i) => ({
+          name: "tool_" + i,
+          description: "Find devices and read their states. ".repeat(60),
+          inputSchema: {
+            type: "object",
+            properties: { entity_id: { type: "string" } },
+          },
+        }));
+        assert.ok(JSON.stringify(tools).length > 120000);
+        const m = await call(alice, "/mcp/install", "POST", {
+          name: "Large catalog",
+          transport: "http",
+          endpoint: "https://mcp.example.test/mcp",
+          visibility: "personal",
+          allowedTools: tools.map((t) => t.name),
+        });
+        await sql`INSERT INTO mcp_tool_catalog(connection_id,owner_id,catalog) VALUES (${m.id}::uuid,${alice.id}::uuid,${JSON.stringify(tools)}::jsonb)`.execute(
+          db,
+        );
+        await sql`UPDATE extension_bindings SET pinned=true WHERE resource_id=${m.id}::uuid`.execute(
+          db,
+        );
+        await call(admin, "/admin/models/settings", "PUT", {
+          providerId: provider,
+          id: "fixture",
+          override: {
+            contextLength: 256000,
+            maxOutputTokens: 8192,
+            reasoning: null,
+          },
+        });
+        const c = await call(alice, "/conversations", "POST", {});
+        const payload = {
+          requestId: randomUUID(),
+          providerId: provider,
+          model: "fixture",
+          content: "Inspect available devices",
+        };
+        const r = await call(
+          alice,
+          "/conversations/" + c.id + "/runs",
+          "POST",
+          payload,
+        );
+        assert.equal(r.context_limit, 256000);
+        await executeRun(db, key, r.id, {
+          run: async (input) => {
+            assert.equal(input.contextLimit, 256000);
+            assert.equal(input.reasoning?.max_tokens, 8192);
+            assert.ok(input.instructions.length > 120000);
+          },
+        });
+        await call(admin, "/admin/models/settings", "PUT", {
+          providerId: provider,
+          id: "fixture",
+          override: {
+            contextLength: 16384,
+            maxOutputTokens: 8192,
+            reasoning: null,
+          },
+        });
+        const rejected = await call(
+          alice,
+          "/conversations/" + c.id + "/runs",
+          "POST",
+          { ...payload, requestId: randomUUID() },
+          400,
+        );
+        assert.equal(rejected.code, "EXTENSION_CONTEXT_LIMIT");
+        assert.equal(rejected.details.contextTokens, 16384);
+        assert.equal(rejected.details.outputTokens, 8192);
+        assert.ok(rejected.details.inputTokens > rejected.details.inputBudget);
+        await sql`DELETE FROM mcp_connections WHERE id=${m.id}::uuid`.execute(
+          db,
+        );
+        await call(alice, "/conversations/" + c.id, "DELETE");
+        await call(admin, "/admin/models/settings", "PUT", {
+          providerId: provider,
+          id: "fixture",
+          override: {},
+        });
+      },
+    );
+    await t.test(
       "catalog preserves choices and overrides; reasoning reaches provider",
       async () => {
         await call(alice, "/admin/models", "GET", undefined, 403);
@@ -734,7 +823,7 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
           },
         );
         await executeRun(db, key, unknownRun.id);
-        assert.equal(Object.hasOwn(payloads.at(-1)!, "max_tokens"), false);
+        assert.equal(payloads.at(-1)?.max_tokens, 8192);
         assert.equal(
           Object.hasOwn(payloads.at(-1)!, "max_completion_tokens"),
           false,

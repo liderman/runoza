@@ -270,6 +270,11 @@ export async function registerModels(app: FastifyInstance, ctx: AuthContext) {
             id: { type: "string", minLength: 1, maxLength: 200 },
             override: object(
               {
+                contextLength: {
+                  type: "integer",
+                  minimum: 1024,
+                  maximum: 2147483647,
+                },
                 maxOutputTokens: {
                   type: "integer",
                   minimum: 1,

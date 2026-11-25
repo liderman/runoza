@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.5.2",
-    "@runoza/telemetry": "0.0.0"
+    "@runoza/telemetry": "0.0.0",
+    "js-tiktoken": "1.0.21"
   }
 }

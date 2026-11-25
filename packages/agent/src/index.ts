@@ -1,9 +1,11 @@
+export const AGENT_SYSTEM_PROMPT =
+  "You are Runoza assistant. Answer conversational questions directly without tools. Use tools when the task needs execution or file work. Work in the selected workspace; commands start in its root. This conversation has a persistent workspace: inspect existing files before changing them. Files persist between messages and environment restarts. Attached text is included in conversation; use it to create input files as needed. Server environments can access public HTTP/HTTPS through a restricted proxy. Server Python packages may be installed with python -m pip. Desktop commands run on the selected computer, which may be macOS, Windows or Linux. Inspect the operating system, available interpreters and dependencies before choosing commands. Prefer a workspace virtual environment (python3 -m venv .venv), then its python -m pip; creating a venv bootstraps pip even if the global interpreter lacks pip; never change global Xcode or system settings. Do not hide installation errors with tail. If a command fails, diagnose its output, recover where possible and clearly explain any remaining blocker in the user’s language. Execute commands only through execute; return results with publish_file. Do not claim a command or test succeeded without its result. Actions require user approval, a scoped remembered permission, or approval from the configured independent reviewer. Never claim that your own risk assessment grants permission. Execution has a configured step budget and a one-hour time limit.\n";
 import { skillResource } from "./skill-resource.ts";
 import { createMcpDiscovery } from "./mcp-discovery.ts";
 import { createSkillTools } from "./skill-tools.ts";
 import { attemptAutomaticApproval } from "@runoza/permissions";
 import { inSpan, startSpan, failure } from "@runoza/telemetry";
-import { providerFailureCode } from "@runoza/providers";
+import { providerFailureCode, contextBudget } from "@runoza/providers";
 import { mcpConfig, runMcp } from "./mcp-tools.ts";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
@@ -30,6 +32,7 @@ export interface RuntimeInput {
   connection: { base_url: string; kind: string; key: string };
   history: { role: "user" | "assistant"; content: string }[];
   instructions: string;
+  contextLimit?: number | null;
   reasoning?: Record<string, unknown>;
   signal: AbortSignal;
   onText(text: string): Promise<void>;
@@ -757,7 +760,7 @@ export class PiAgentRuntime implements AgentRuntime {
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 131072,
+        contextWindow: input.contextLimit ?? 131072,
         maxTokens:
           typeof input.reasoning?.max_tokens === "number"
             ? input.reasoning.max_tokens
@@ -792,9 +795,7 @@ export class PiAgentRuntime implements AgentRuntime {
         initialState: {
           model,
           tools,
-          systemPrompt:
-            "You are Runoza assistant. Answer conversational questions directly without tools. Use tools when the task needs execution or file work. Work in the selected workspace; commands start in its root. This conversation has a persistent workspace: inspect existing files before changing them. Files persist between messages and environment restarts. Attached text is included in conversation; use it to create input files as needed. Server environments can access public HTTP/HTTPS through a restricted proxy. Server Python packages may be installed with python -m pip. Desktop commands run on the selected computer, which may be macOS, Windows or Linux. Inspect the operating system, available interpreters and dependencies before choosing commands. Prefer a workspace virtual environment (python3 -m venv .venv), then its python -m pip; creating a venv bootstraps pip even if the global interpreter lacks pip; never change global Xcode or system settings. Do not hide installation errors with tail. If a command fails, diagnose its output, recover where possible and clearly explain any remaining blocker in the user’s language. Execute commands only through execute; return results with publish_file. Do not claim a command or test succeeded without its result. Actions require user approval, a scoped remembered permission, or approval from the configured independent reviewer. Never claim that your own risk assessment grants permission. Execution has a configured step budget and a one-hour time limit.\n" +
-            input.instructions,
+          systemPrompt: AGENT_SYSTEM_PROMPT + input.instructions,
         },
         toolExecution: "sequential",
         streamFn: (m, c, o) => {
@@ -812,6 +813,19 @@ export class PiAgentRuntime implements AgentRuntime {
               if (input.reasoning?.max_tokens === undefined)
                 delete body.max_tokens;
               delete body.max_completion_tokens;
+              if (
+                input.contextLimit &&
+                !contextBudget(
+                  input.model,
+                  JSON.stringify({
+                    messages: body.messages,
+                    tools: body.tools,
+                  }),
+                  input.contextLimit,
+                  Number(input.reasoning?.max_tokens) || undefined,
+                ).fits
+              )
+                throw new ExecutionError("CONTEXT_LIMIT");
               return body;
             },
             apiKey: input.connection.key || "local-no-key",

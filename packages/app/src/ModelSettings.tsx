@@ -62,10 +62,23 @@ export function ModelSettings({
   const [defaults, setDefaults] = useState({
     override: {} as ModelOverride,
     outputLimit: "",
+    contextLimit: "",
   });
   const form = useForm({ defaultValues: defaults });
   const draft = useStore(form.store, (state) => state.values.override);
   const outputLimit = useStore(form.store, (state) => state.values.outputLimit);
+  const contextLimit = useStore(
+    form.store,
+    (state) => state.values.contextLimit,
+  );
+  const setContextLimit = (value: string) =>
+    form.setFieldValue("contextLimit", value);
+  const invalidContextLimit =
+    contextLimit !== "" &&
+    (!/^\d+$/.test(contextLimit) ||
+      !Number.isSafeInteger(Number(contextLimit)) ||
+      Number(contextLimit) < 1024 ||
+      Number(contextLimit) > 2147483647);
   const atBaseline = useStore(form.store, (state) => state.isDefaultValue);
   const setDraft = (
     value: ModelOverride | ((previous: ModelOverride) => ModelOverride),
@@ -358,6 +371,9 @@ export function ModelSettings({
                               setEditing(m);
                               const values = {
                                 override: structuredClone(m.override),
+                                contextLimit: String(
+                                  m.override.contextLength ?? "",
+                                ),
                                 outputLimit: String(
                                   m.override.maxOutputTokens ?? "",
                                 ),
@@ -432,7 +448,10 @@ export function ModelSettings({
             {editing && (
               <ModelFacts
                 reference={editing.metadata.reference}
-                contextLength={editing.metadata.contextLength}
+                contextLength={
+                  editing.override.contextLength ??
+                  editing.metadata.contextLength
+                }
                 maxOutputTokens={editing.maxOutputTokens}
                 locale={locale}
               />
@@ -444,6 +463,25 @@ export function ModelSettings({
               value={draft.group ?? ""}
               placeholder={editing?.group}
               onChange={(group) => setDraft((d) => ({ ...d, group }))}
+            />
+            <NumericField
+              required={false}
+              label={ru ? "Контекст модели, токенов" : "Model context tokens"}
+              value={contextLimit}
+              onChange={setContextLimit}
+              placeholder={String(editing?.metadata.contextLength ?? 131072)}
+              help={
+                ru
+                  ? "Общее окно модели: вход и ответ вместе. Пустое поле использует каталог; если размер неизвестен — 131072 токена. Для локального псевдонима задайте реальный размер окна."
+                  : "Total model window: input and output together. Blank uses the catalog, or 131072 tokens if unknown. Set the actual window for a local alias."
+              }
+              error={
+                invalidContextLimit
+                  ? ru
+                    ? "Введите целое число от 1024."
+                    : "Enter a whole number of at least 1024."
+                  : undefined
+              }
             />
             <NumericField
               required={false}
@@ -468,8 +506,8 @@ export function ModelSettings({
               }
               help={
                 ru
-                  ? "Оставьте пустым, чтобы использовать каталог. Если лимит неизвестен, он не передаётся в запросе. У провайдера в этот бюджет могут входить рассуждения. Доступный объём также зависит от оставшегося контекста."
-                  : "Leave blank to use the catalog. Unknown limits are omitted from requests. Reasoning may count toward this budget. Available output also depends on the remaining context."
+                  ? "Этот объём резервируется внутри контекста и передаётся как лимит ответа. Пустое поле использует каталог; если лимит неизвестен — до 8192 токенов, не более четверти окна. Рассуждения могут входить в этот бюджет."
+                  : "This budget is reserved within the context and sent as the output limit. Blank uses the catalog; if unknown, up to 8192 tokens and at most a quarter of the window. Reasoning may count toward this budget."
               }
               error={
                 invalidOutputLimit
@@ -655,13 +693,17 @@ export function ModelSettings({
           loading={busy}
           propsButtonApply={{
             disabled:
-              invalidOutputLimit || Boolean(profile && !profile.levels.length),
+              invalidContextLimit ||
+              invalidOutputLimit ||
+              Boolean(profile && !profile.levels.length),
           }}
           onClickButtonCancel={close}
           onClickButtonApply={() =>
             void action(async () => {
               if (!editing) return;
               const value = structuredClone(draft);
+              if (contextLimit) value.contextLength = Number(contextLimit);
+              else delete value.contextLength;
               if (outputLimit) value.maxOutputTokens = Number(outputLimit);
               else delete value.maxOutputTokens;
               if (value.reasoning?.transport === "thinking_budget")

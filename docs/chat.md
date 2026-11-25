@@ -74,3 +74,25 @@ Before upgrading, use all migrations, including `011_chat_experience`, when the 
 ## Activity and expansion (stage 7)
 
 In the side list, the gray indicator is the queue, the pulsating green is the execution, the orange is the waiting for resolution. Status is available in text in the hint and for the on-screen announcer; reduced-motion turns off animation. The list is updated every three seconds. Once completed, the indicator disappears. [Skills and MCP](extensions.md) are selected by the Extension button next to the model.
+
+## Context budget
+
+Pinned MCP schemas and conversation content share a token budget; there are no separate
+50,000/120,000-character gates. The effective context window comes from the model's
+manual **Model context tokens** setting, then provider/catalog metadata; an unknown
+window falls back to 131,072 tokens. Set the actual window for local aliases.
+The effective maximum output (manual setting, then catalog) is reserved and sent as
+`max_tokens`; when unknown it defaults to 8,192 tokens, capped at one quarter of the
+window. An additional 1% of the window (at least 128 tokens) is reserved for protocol
+overhead. Context and output settings are snapshotted when a run is queued.
+
+Input is counted locally with BPE (`js-tiktoken`): modern GPT/o-series identifiers use
+o200k_base, older GPT identifiers use cl100k_base. Other/local models use cl100k_base
+with a 20% margin, which is an estimate, not their native tokenizer. Provider-side
+counting can differ. Literal special-token strings are treated as text.
+
+The initial check includes history, extracted attachments, retrieved passages, project
+and skill instructions, and pinned schemas. Each model request is checked again using
+its actual message/tool payload, including later tool results. Oversized requests are
+rejected without silently dropping pinned tools or truncating the conversation. Errors
+at submission include estimated input, input budget, context window and output reserve.

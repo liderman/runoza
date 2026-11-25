@@ -44,6 +44,7 @@ export interface ModelMetadata {
   reasoning?: ReasoningProfile | null;
 }
 export interface ModelOverride {
+  contextLength?: number;
   maxOutputTokens?: number;
   group?: string;
   reasoning?: ReasoningProfile | null;
@@ -108,6 +109,7 @@ export function modelDetails(
   };
   return {
     name: metadata.name ?? id,
+    contextLength: override.contextLength ?? metadata.contextLength,
     maxOutputTokens: override.maxOutputTokens ?? metadata.maxOutputTokens,
     group: override.group || metadata.group || names[vendor] || vendor,
     reasoning,

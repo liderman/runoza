@@ -228,6 +228,7 @@ export function ChatWorkspace({
     [busy, setBusy] = useState(false),
     [loading, setLoading] = useState(true),
     [error, setError] = useState(""),
+    [contextError, setContextError] = useState(""),
     [reconnecting, setReconnecting] = useState(false);
   const defaultsQuery = useQuery({
     queryKey: ["chat", "preferences"],
@@ -395,6 +396,24 @@ export function ChatWorkspace({
   );
   function report(e: unknown) {
     if (e instanceof IdentityApiError && e.status === 401) onExpired();
+    setContextError("");
+    if (
+      e instanceof IdentityApiError &&
+      ["CONTEXT_LIMIT", "EXTENSION_CONTEXT_LIMIT"].includes(e.code) &&
+      e.details
+    ) {
+      const d = e.details;
+      if (
+        [d.inputTokens, d.inputBudget, d.contextTokens, d.outputTokens].every(
+          (x) => typeof x === "number" && Number.isFinite(x),
+        )
+      )
+        setContextError(
+          locale === "ru"
+            ? `Оценка входа: ${d.inputTokens} токенов; доступно: ${d.inputBudget}. Контекст модели: ${d.contextTokens}, резерв на ответ: ${d.outputTokens}. Сократите историю/схемы или проверьте настройки контекста и ответа модели.`
+            : `Estimated input: ${d.inputTokens} tokens; available: ${d.inputBudget}. Model context: ${d.contextTokens}; response reserve: ${d.outputTokens}. Reduce history/schemas or check the model context and output settings.`,
+        );
+    }
     setError(e instanceof IdentityApiError ? e.code : "error");
   }
   async function list() {
@@ -1015,7 +1034,11 @@ export function ChatWorkspace({
                 "ATTACHMENT_LIMIT",
               ].includes(error)
                 ? rt(error)
-                : t(error)
+                : ["CONTEXT_LIMIT", "EXTENSION_CONTEXT_LIMIT"].includes(
+                      error,
+                    ) && contextError
+                  ? contextError
+                  : t(error)
             }
           />
         )}

@@ -326,7 +326,6 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
         providerName: m.providerName,
         providerBrand: referenceProviderId(m.base_url),
         reference: withCatalogReference(m.base_url, m.id, m.metadata).reference,
-        contextLength: m.metadata.contextLength,
         ...modelDetails(m.id, m.kind, m.metadata, m.overrides),
       })),
     };
@@ -406,7 +405,6 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
                 latest.id,
                 latest.metadata ?? {},
               ).reference,
-              contextLength: latest.metadata?.contextLength,
               ...modelDetails(
                 latest.id,
                 latest.kind,

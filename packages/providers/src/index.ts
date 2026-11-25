@@ -1,3 +1,9 @@
+export {
+  contextLimits,
+  contextBudget,
+  countContextTokens,
+} from "./context-budget.ts";
+import { contextBudget } from "./context-budget.ts";
 import { startSpan, failure } from "@runoza/telemetry";
 import { referenceModel } from "./catalog.ts";
 export {
@@ -16,6 +22,7 @@ import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 // Pi exposes SDK errors as text. Only classify known connection failures;
 // never send raw provider messages (which can contain request data) to clients.
 export function providerFailureCode(message = "") {
+  if (message.includes("CONTEXT_LIMIT")) return "CONTEXT_LIMIT";
   return /connection error|connection timed out|request timed out|connect timeout|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT/i.test(
     message,
   )
@@ -144,6 +151,7 @@ async function* generateInternal(
   signal: AbortSignal,
   systemPrompt?: string,
   reasoning: Record<string, unknown> = {},
+  contextLimit?: number | null,
 ) {
   const model: Model<"openai-completions"> = {
     id: modelId,
@@ -154,7 +162,7 @@ async function* generateInternal(
     reasoning: false,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 131072,
+    contextWindow: contextLimit ?? 131072,
     maxTokens:
       typeof reasoning.max_tokens === "number" ? reasoning.max_tokens : 0,
     compat: { supportsStore: false, maxTokensField: "max_tokens" },
@@ -191,6 +199,16 @@ async function* generateInternal(
         // pi supplies its own fallback even when no catalog limit is known.
         if (reasoning.max_tokens === undefined) delete body.max_tokens;
         delete body.max_completion_tokens;
+        if (
+          contextLimit &&
+          !contextBudget(
+            modelId,
+            JSON.stringify({ messages: body.messages, tools: body.tools }),
+            contextLimit,
+            Number(reasoning.max_tokens) || undefined,
+          ).fits
+        )
+          throw new ProviderError("CONTEXT_LIMIT");
         return body;
       },
       apiKey: c.key || "local-no-key",
