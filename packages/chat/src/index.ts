@@ -1395,6 +1395,8 @@ async function executeRunInternal(
       !lost &&
       [
         "PROVIDER_UNAVAILABLE",
+        "PROVIDER_CONNECTION_FAILED",
+        "PROVIDER_TRANSIENT",
         "STREAM_INTERRUPTED",
         "PROVIDER_TIMEOUT",
       ].includes(code) &&

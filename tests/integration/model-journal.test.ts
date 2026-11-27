@@ -70,6 +70,7 @@ test(
       upstream = Fastify();
     let intercept: (() => Promise<void>) | undefined;
     let workspaceMode = false;
+    let disconnectNext = false;
     let failNext = true,
       httpCalls = 0;
     upstream.post("/v1/chat/completions", async (req, reply) => {
@@ -91,6 +92,11 @@ test(
         const once = intercept;
         intercept = undefined;
         await once?.();
+        if (disconnectNext) {
+          reply.hijack();
+          reply.raw.destroy();
+          return;
+        }
         return reply
           .code(503)
           .send({ error: { message: "temporary fixture outage" } });
@@ -876,119 +882,127 @@ test(
           }
         },
       );
-      await t.test(
-        "executeRun requeues automatically, worker dispatches new job, API exposes only safe boundary metadata",
-        async () => {
-          const f = await setup(),
-            key = "cd".repeat(32);
-          await sql`UPDATE provider_connections SET secret_ciphertext=${secretBox(key).seal("fixture", "provider:" + provider)} WHERE id=${provider}::uuid`.execute(
-            db,
-          );
-          await sql`UPDATE chat_runs SET status='queued',lease=NULL WHERE id=${f.id}::uuid`.execute(
-            db,
-          );
-          failNext = true;
-          const runtime = new PiAgentRuntime(
-            db,
-            {
-              acquire: async () => {
-                throw Error("no environment needed");
+      for (const failure of [
+        "PROVIDER_TRANSIENT",
+        "PROVIDER_CONNECTION_FAILED",
+      ])
+        await t.test(
+          "executeRun requeues automatically, worker dispatches new job, API exposes only safe boundary metadata: " +
+            failure,
+          async () => {
+            const f = await setup(),
+              key = "cd".repeat(32);
+            await sql`UPDATE provider_connections SET secret_ciphertext=${secretBox(key).seal("fixture", "provider:" + provider)} WHERE id=${provider}::uuid`.execute(
+              db,
+            );
+            await sql`UPDATE chat_runs SET status='queued',lease=NULL WHERE id=${f.id}::uuid`.execute(
+              db,
+            );
+            failNext = true;
+            const runtime = new PiAgentRuntime(
+              db,
+              {
+                acquire: async () => {
+                  throw Error("no environment needed");
+                },
+                sweep: async () => {},
               },
-              sweep: async () => {},
-            },
-            {} as StorageService,
-          );
-          await executeRun(db, key, f.id, runtime);
-          const queued = (
-            await sql<{
-              status: string;
-              model_recovery_count: number;
-              model_dispatch_id: string;
-            }>`SELECT status,model_recovery_count,model_dispatch_id FROM chat_runs WHERE id=${f.id}::uuid`.execute(
-              db,
-            )
-          ).rows[0]!;
-          assert.equal(queued.status, "queued");
-          assert.equal(queued.model_recovery_count, 1);
-          const sent: { runId: string; jobId: string }[] = [];
-          const boss = {
-            work: async () => {},
-            send: async (
-              _name: string,
-              data: { runId: string },
-              options: { id: string },
-            ) => {
-              sent.push({ runId: data.runId, jobId: options.id });
-            },
-          } as unknown as Parameters<typeof startChatWorker>[1];
-          const stop = await startChatWorker(db, boss, key, runtime);
-          stop();
-          assert.equal(
-            sent.find((s) => s.runId === f.id)?.jobId,
-            queued.model_dispatch_id,
-          );
-          failNext = false;
-          await executeRun(db, key, f.id, runtime);
-          const finished = (
-            await sql<{
-              status: string;
-              model_recovery_count: number;
-            }>`SELECT status,model_recovery_count FROM chat_runs WHERE id=${f.id}::uuid`.execute(
-              db,
-            )
-          ).rows[0]!;
-          assert.equal(finished.status, "completed");
-          assert.equal(finished.model_recovery_count, 1);
-          const events = await eventsAfter(db, f.id, 0);
-          assert.equal(events.at(-1)?.model_journal_state, "final");
-          const origin = "http://localhost:53021",
-            session = await newSession(db, owner);
-          const app = createApp(async () => {}, false, {
-            db,
-            storage: {} as StorageService,
-            config: {
-              publicOrigin: origin,
-              encryptionKey: "ab".repeat(32),
-              providerEncryptionKey: key,
-              bootstrapToken: "x".repeat(32),
-              allowInsecureOidc: false,
-            },
-          });
-          try {
-            const response = await app.inject({
-              method: "GET",
-              url: `/api/v1/conversations/${f.conversation}`,
-              headers: { cookie: "runoza_session=" + session.raw },
-            });
-            assert.equal(response.statusCode, 200, response.body);
-            const body = response.json();
-            assert.equal(body.runs[0].model_journal_state, "final");
-            for (const forbidden of [
-              "request_messages",
-              "fingerprint",
-              "model_dispatch_id",
-              "configuration",
-            ])
-              assert.equal(forbidden in body.runs[0], false);
-            const stranger = randomUUID();
-            await sql`INSERT INTO users(id,email,name) VALUES (${stranger}::uuid,${stranger + "@fixture.test"},'Stranger')`.execute(
-              db,
+              {} as StorageService,
             );
-            await sql`INSERT INTO memberships(organization_id,user_id,role) VALUES (${org}::uuid,${stranger}::uuid,'member')`.execute(
-              db,
+            disconnectNext = failure === "PROVIDER_CONNECTION_FAILED";
+            await executeRun(db, key, f.id, runtime);
+            const queued = (
+              await sql<{
+                status: string;
+                model_recovery_count: number;
+                model_dispatch_id: string;
+                model_journal_reason: string;
+              }>`SELECT status,model_recovery_count,model_dispatch_id,model_journal_reason FROM chat_runs WHERE id=${f.id}::uuid`.execute(
+                db,
+              )
+            ).rows[0]!;
+            assert.equal(queued.status, "queued");
+            assert.equal(queued.model_journal_reason, failure);
+            assert.equal(queued.model_recovery_count, 1);
+            const sent: { runId: string; jobId: string }[] = [];
+            const boss = {
+              work: async () => {},
+              send: async (
+                _name: string,
+                data: { runId: string },
+                options: { id: string },
+              ) => {
+                sent.push({ runId: data.runId, jobId: options.id });
+              },
+            } as unknown as Parameters<typeof startChatWorker>[1];
+            const stop = await startChatWorker(db, boss, key, runtime);
+            stop();
+            assert.equal(
+              sent.find((s) => s.runId === f.id)?.jobId,
+              queued.model_dispatch_id,
             );
-            const foreign = await newSession(db, stranger);
-            const denied = await app.inject({
-              method: "GET",
-              url: `/api/v1/conversations/${f.conversation}`,
-              headers: { cookie: "runoza_session=" + foreign.raw },
+            failNext = false;
+            await executeRun(db, key, f.id, runtime);
+            const finished = (
+              await sql<{
+                status: string;
+                model_recovery_count: number;
+              }>`SELECT status,model_recovery_count FROM chat_runs WHERE id=${f.id}::uuid`.execute(
+                db,
+              )
+            ).rows[0]!;
+            assert.equal(finished.status, "completed");
+            assert.equal(finished.model_recovery_count, 1);
+            const events = await eventsAfter(db, f.id, 0);
+            assert.equal(events.at(-1)?.model_journal_state, "final");
+            const origin = "http://localhost:53021",
+              session = await newSession(db, owner);
+            const app = createApp(async () => {}, false, {
+              db,
+              storage: {} as StorageService,
+              config: {
+                publicOrigin: origin,
+                encryptionKey: "ab".repeat(32),
+                providerEncryptionKey: key,
+                bootstrapToken: "x".repeat(32),
+                allowInsecureOidc: false,
+              },
             });
-            assert.ok([403, 404].includes(denied.statusCode));
-          } finally {
-            await app.close();
-          }
-        },
-      );
+            try {
+              const response = await app.inject({
+                method: "GET",
+                url: `/api/v1/conversations/${f.conversation}`,
+                headers: { cookie: "runoza_session=" + session.raw },
+              });
+              assert.equal(response.statusCode, 200, response.body);
+              const body = response.json();
+              assert.equal(body.runs[0].model_journal_state, "final");
+              for (const forbidden of [
+                "request_messages",
+                "fingerprint",
+                "model_dispatch_id",
+                "configuration",
+              ])
+                assert.equal(forbidden in body.runs[0], false);
+              const stranger = randomUUID();
+              await sql`INSERT INTO users(id,email,name) VALUES (${stranger}::uuid,${stranger + "@fixture.test"},'Stranger')`.execute(
+                db,
+              );
+              await sql`INSERT INTO memberships(organization_id,user_id,role) VALUES (${org}::uuid,${stranger}::uuid,'member')`.execute(
+                db,
+              );
+              const foreign = await newSession(db, stranger);
+              const denied = await app.inject({
+                method: "GET",
+                url: `/api/v1/conversations/${f.conversation}`,
+                headers: { cookie: "runoza_session=" + foreign.raw },
+              });
+              assert.ok([403, 404].includes(denied.statusCode));
+            } finally {
+              await app.close();
+            }
+          },
+        );
       await t.test(
         "revoked access stops resumed execution without erasing saved text",
         async () => {
