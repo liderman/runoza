@@ -30,7 +30,7 @@ export function generationBudget(
             generation_tool_seen: boolean;
             max_agent_steps: number;
             expired: boolean;
-          }>`SELECT status,lease,generation_calls,recovery_count,(generation_tool_seen OR EXISTS(SELECT 1 FROM code_actions a WHERE a.run_id=chat_runs.id)) AS generation_tool_seen,max_agent_steps,(generation_started_at IS NOT NULL AND generation_started_at < now() - CASE WHEN mode='code' THEN interval '1 hour' ELSE interval '10 minutes' END) AS expired FROM chat_runs WHERE id=${runId}::uuid FOR UPDATE`.execute(
+          }>`SELECT status,lease,generation_calls,recovery_count,(generation_tool_seen OR EXISTS(SELECT 1 FROM code_actions a WHERE a.run_id=chat_runs.id)) AS generation_tool_seen,max_agent_steps,(mode='code' AND NOT compaction_only AND generation_started_at IS NOT NULL AND generation_started_at < now() - interval '1 hour') AS expired FROM chat_runs WHERE id=${runId}::uuid FOR UPDATE`.execute(
             trx,
           )
         ).rows[0];

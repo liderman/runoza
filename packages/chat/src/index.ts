@@ -1098,10 +1098,13 @@ async function executeRunInternal(
       null,
       lease,
     );
-    const signal = AbortSignal.any([
-      controller.signal,
-      AbortSignal.timeout(run.mode === "code" ? 3600000 : 600000),
-    ]);
+    // Compaction can need several healthy model requests. Do not impose the
+    // former ten-minute chat timer on that sequence; Stop and live lease checks
+    // still cancel it. The existing code-execution ceiling remains unchanged.
+    const signal =
+      run.mode === "code" && !run.compaction_only
+        ? AbortSignal.any([controller.signal, AbortSignal.timeout(3600000)])
+        : controller.signal;
     const c = {
       ...p,
       key: secretBox(providerKey).open(p.secret_ciphertext, "provider:" + p.id),

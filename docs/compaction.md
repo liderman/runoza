@@ -43,7 +43,9 @@ fails while the original request still fits, work can continue with that unchang
 context. If no safe context fits, the run stops with a specific error.
 
 Model HTTP requests allow up to 180 seconds for long-context prefill, while Stop,
-lease checks and the overall run deadline still apply. Exhausted retries with no
+lease checks still apply. Plain chat and manual compaction have no aggregate
+ten-minute deadline; healthy summary chunks can finish in sequence. The existing
+one-hour code execution ceiling and explicit call budgets remain unchanged. Exhausted retries with no
 text preserve the provider error rather than claiming a partial answer exists.
 
 ## Persistence and recovery

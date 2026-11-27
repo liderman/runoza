@@ -33,6 +33,7 @@ test(
     ).join("\n\n");
     let mode: "valid" | "empty" | "length" = "valid";
     let summaryStarted: (() => void) | undefined;
+    let beforeSummary: (() => Promise<void>) | undefined;
     let summaryGate: Promise<void> | undefined;
     const payloads: { messages: { role: string; content: string }[] }[] = [];
     fixture.get("/v1/models", async () => ({
@@ -53,6 +54,7 @@ test(
           m.content.includes("Write a continuation checkpoint"),
       );
       if (isSummary) {
+        await beforeSummary?.();
         summaryStarted?.();
         await summaryGate;
       }
@@ -270,6 +272,50 @@ test(
           assert.equal((await stored(fork.id)).status, "completed");
           assert.ok(
             !JSON.stringify(payloads.at(-1)).includes("Context checkpoint"),
+          );
+        },
+      );
+      await t.test(
+        "long manual compaction outlives the former chat deadline and retains every source message",
+        async (t) => {
+          const c = await conversation(),
+            r = await run(c.id, "/compaction Preserve source IDs");
+          const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+          // Accelerate the old wall-clock timer without shortening individual
+          // HTTP requests, then age the durable budget between summary chunks.
+          const timerMock = t.mock.method(
+            AbortSignal,
+            "timeout",
+            (ms: number) => originalTimeout(ms === 600000 ? 1 : ms),
+          );
+          beforeSummary = async () => {
+            await sql`UPDATE chat_runs SET generation_started_at=now()-interval '2 hours' WHERE id=${r.id}::uuid`.execute(
+              db,
+            );
+          };
+          const calls = payloads.length;
+          try {
+            await executeRun(db, key, r.id);
+          } finally {
+            beforeSummary = undefined;
+            timerMock.mock.restore();
+          }
+          const result = await stored(r.id);
+          assert.equal(result.status, "completed", result.error_code ?? "");
+          assert.equal(result.compaction_count, 1);
+          assert.ok(
+            payloads.length - calls > 1,
+            "exercise multiple summary requests",
+          );
+          assert.equal(
+            (
+              await sql<{
+                n: number;
+              }>`SELECT count(*)::int AS n FROM messages WHERE id IN (${sql.join(c.ids.map((id: string) => sql`${id}::uuid`))})`.execute(
+                db,
+              )
+            ).rows[0]!.n,
+            c.ids.length,
           );
         },
       );
