@@ -1,3 +1,9 @@
+import { researchMigration } from "./research-migration.ts";
+import { rollbackMigration } from "./rollback-migration.ts";
+import { modelJournalMigration } from "./model-journal-migration.ts";
+import { conversationQueueMigration } from "./conversation-queue-migration.ts";
+import { generationAttemptsMigration } from "./generation-attempts-migration.ts";
+import { runPlanMigration } from "./run-plan-migration.ts";
 import { projectLibraryMigration } from "./project-library-migration.ts";
 import { toolInputMigration } from "./tool-input-migration.ts";
 import { knowledgeMigration } from "./knowledge-migration.ts";
@@ -35,7 +41,9 @@ import { workspaceMigration } from "./workspace-migration.ts";
 import { compactionMigration } from "./compaction-migration.ts";
 import { mcpNetworkMigration } from "./mcp-network-migration.ts";
 import { agentFilesMigration } from "./agent-files-migration.ts";
-export const SCHEMA_VERSION = "037_agent_files";
+import { codingFoundationMigration } from "./coding-foundation-migration.ts";
+import { revisionReferencesMigration } from "./revision-references-migration.ts";
+export const SCHEMA_VERSION = "045_managed_rollback";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -109,6 +117,14 @@ export const migrations: Record<string, Migration> = {
   "035_mcp_network": mcpNetworkMigration,
   "036_compaction": compactionMigration,
   "037_agent_files": agentFilesMigration,
+  "038_coding_foundation": codingFoundationMigration,
+  "039_revision_references": revisionReferencesMigration,
+  "040_run_plan": runPlanMigration,
+  "041_generation_attempts": generationAttemptsMigration,
+  "042_conversation_queue": conversationQueueMigration,
+  "043_model_journal": modelJournalMigration,
+  "044_readonly_research": researchMigration,
+  "045_managed_rollback": rollbackMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({

@@ -7,7 +7,7 @@ export function permissionPattern(
   tool: string,
   input: string,
 ): PermissionPattern | null {
-  if (tool === "read_file" || tool === "write_file") {
+  if (tool === "read_file" || tool === "write_file" || tool === "edit_file") {
     try {
       const path = tool === "read_file" ? input : JSON.parse(input).path;
       if (

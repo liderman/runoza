@@ -159,7 +159,7 @@ export function agentFiles(
     );
     const notice = JSON.stringify({
       message:
-        "Tool response exceeds 50000 characters. The complete response was saved to a conversation file; it has not been truncated. Read selected pages with files_read or find relevant passages with files_search. This virtual path is not a shell path: in code mode use files_export to copy it to the workspace before grep/jq. Do not repeat the original action just to retrieve its output.",
+        "Tool response exceeds the working-context budget. The complete response was saved to a conversation file; it has not been truncated. Read selected pages with files_read or find relevant passages with files_search. This virtual path is not a shell path: in code mode use files_export to copy it to the workspace before grep/jq. Do not repeat the original action just to retrieve its output.",
       ...file,
       actionId,
     });

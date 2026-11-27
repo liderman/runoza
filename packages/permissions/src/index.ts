@@ -1,3 +1,4 @@
+import { toolAllowedInIntent } from "@runoza/contracts";
 import { reviewOutputParameters } from "./output.ts";
 import {
   permissionPattern,
@@ -57,6 +58,7 @@ type Action = {
   organization_id: string;
   desktop_workspace_id: string | null;
   approval_mode: string;
+  intent: string;
   user_message_id: string;
 };
 const scopeKey = (a: Action) =>
@@ -65,11 +67,14 @@ const scopeKey = (a: Action) =>
     : "server:" + a.conversation_id;
 const hash = (a: Action) => digest(JSON.stringify([a.tool, a.input]));
 async function actionFor(db: Database, id: string) {
-  return (
-    await sql<Action>`SELECT a.id,a.run_id,a.tool,a.input,r.owner_id,r.conversation_id,r.approval_mode,r.user_message_id,c.organization_id,c.desktop_workspace_id FROM code_actions a JOIN chat_runs r ON r.id=a.run_id JOIN conversations c ON c.id=r.conversation_id JOIN users u ON u.id=r.owner_id JOIN memberships m ON m.user_id=u.id AND m.organization_id=c.organization_id JOIN feature_flags f ON f.organization_id=c.organization_id WHERE a.id=${id}::uuid AND a.status='pending' AND r.status='running' AND NOT u.disabled AND (c.desktop_workspace_id IS NULL OR EXISTS(SELECT 1 FROM desktop_workspaces w JOIN desktop_devices d ON d.id=w.device_id WHERE w.id=c.desktop_workspace_id AND d.owner_id=u.id AND d.revoked_at IS NULL)) AND f.flags->>'chat'='true' AND (CASE WHEN a.tool IN ('mcp_list','mcp_call') THEN f.flags->>'mcp'='true' ELSE f.flags->>'code'='true' AND r.mode='code' END) AND ((c.project_id IS NULL AND c.owner_id=u.id) OR EXISTS(SELECT 1 FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id AND pm.user_id=u.id WHERE p.id=c.project_id AND (p.owner_id=u.id OR pm.role='editor')))`.execute(
+  const action = (
+    await sql<Action>`SELECT a.id,a.run_id,a.tool,a.input,r.owner_id,r.conversation_id,r.approval_mode,r.intent,r.user_message_id,c.organization_id,c.desktop_workspace_id FROM code_actions a JOIN chat_runs r ON r.id=a.run_id JOIN conversations c ON c.id=r.conversation_id JOIN users u ON u.id=r.owner_id JOIN memberships m ON m.user_id=u.id AND m.organization_id=c.organization_id JOIN feature_flags f ON f.organization_id=c.organization_id WHERE a.id=${id}::uuid AND a.status='pending' AND r.status='running' AND NOT u.disabled AND (c.desktop_workspace_id IS NULL OR EXISTS(SELECT 1 FROM desktop_workspaces w JOIN desktop_devices d ON d.id=w.device_id WHERE w.id=c.desktop_workspace_id AND d.owner_id=u.id AND d.revoked_at IS NULL)) AND f.flags->>'chat'='true' AND (CASE WHEN a.tool IN ('mcp_list','mcp_call') THEN f.flags->>'mcp'='true' ELSE f.flags->>'code'='true' AND r.mode='code' END) AND ((c.project_id IS NULL AND c.owner_id=u.id) OR EXISTS(SELECT 1 FROM projects p LEFT JOIN project_members pm ON pm.project_id=p.id AND pm.user_id=u.id WHERE p.id=c.project_id AND (p.owner_id=u.id OR pm.role='editor')))`.execute(
       db,
     )
   ).rows[0];
+  return action && toolAllowedInIntent(action.intent, action.tool)
+    ? action
+    : undefined;
 }
 export async function rememberDecision(
   db: Database,

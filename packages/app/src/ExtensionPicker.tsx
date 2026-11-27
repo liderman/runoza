@@ -1,4 +1,9 @@
-import { useState } from "react";
+import {
+  ExtensionDetails,
+  extensionExample,
+  extensionUnavailable,
+} from "./ExtensionDetails.tsx";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Alert,
@@ -21,6 +26,7 @@ export function ExtensionPicker({
   disabled,
   workspace,
   selection,
+  onTry,
 }: {
   api: IdentityClient;
   locale: "ru" | "en";
@@ -28,6 +34,7 @@ export function ExtensionPicker({
   conversationId: string | null;
   disabled?: boolean;
   workspace: boolean;
+  onTry?: (item: ExtensionEntry, example: string) => void;
   selection?: { kind: "skill" | "mcp" | null; onClose: () => void };
 }) {
   const ru = locale === "ru",
@@ -43,6 +50,15 @@ export function ExtensionPicker({
       if (!value) selection.onClose();
     } else setStandaloneOpen(value);
   }
+  const epoch = useRef(0);
+  useLayoutEffect(() => {
+    epoch.current++;
+    setPending(null);
+    setError("");
+    return () => {
+      epoch.current++;
+    };
+  }, [api, conversationId, projectId, open, workspace, disabled, kind]);
   const client = useQueryClient();
   const catalog = useQuery({
     queryKey: ["extensions", "catalog", conversationId, projectId],
@@ -155,10 +171,7 @@ export function ExtensionPicker({
               </Text>
             ) : (
               items.map((item) => {
-                const unavailable =
-                  !item.available ||
-                  !item.enabled ||
-                  (item.transport === "stdio" && !workspace);
+                const unavailable = extensionUnavailable(item, workspace);
                 return (
                   <Box key={item.kind + item.id} paddingBlock="spacing-2">
                     <Flex
@@ -181,19 +194,7 @@ export function ExtensionPicker({
                           </Label>
                         </Flex>
                         <Text variant="caption-2" color="secondary">
-                          {!item.available
-                            ? s(
-                                "Запрещено администратором",
-                                "Disabled by administrator",
-                              )
-                            : !item.enabled
-                              ? s("Не включено", "Not enabled")
-                              : item.transport === "stdio" && !workspace
-                                ? s(
-                                    "Нужна рабочая область",
-                                    "Workspace required",
-                                  )
-                                : item.description || item.transport}
+                          {item.description || item.transport}
                         </Text>
                       </Flex>
                       {
@@ -210,6 +211,77 @@ export function ExtensionPicker({
                           aria-label={s("Закрепить ", "Pin ") + item.name}
                         />
                       }
+                    </Flex>
+                    <Flex
+                      direction="column"
+                      gap="spacing-2"
+                      paddingBlockStart="spacing-2"
+                    >
+                      <ExtensionDetails
+                        item={item}
+                        locale={locale}
+                        workspace={workspace}
+                      />
+                      {onTry && (
+                        <Button
+                          size="s"
+                          view="outlined"
+                          disabled={
+                            disabled ||
+                            unavailable ||
+                            pending !== null ||
+                            (item.kind === "skill" &&
+                              (!item.versionId ||
+                                item.manifest?.userInvocable === false))
+                          }
+                          loading={pending === "try:" + item.id}
+                          aria-label={s("Попробовать ", "Try ") + item.name}
+                          onClick={async () => {
+                            const requestEpoch = epoch.current;
+                            setPending("try:" + item.id);
+                            setError("");
+                            try {
+                              // Recheck the scope before adding a reference; this never executes a run.
+                              const latest = await catalog.refetch();
+                              if (requestEpoch !== epoch.current) return;
+                              if (latest.error) throw latest.error;
+                              const current = latest.data?.extensions.find(
+                                (x) => x.id === item.id && x.kind === item.kind,
+                              );
+                              if (
+                                !current ||
+                                extensionUnavailable(current, workspace) ||
+                                (current.kind === "skill" &&
+                                  (!current.versionId ||
+                                    current.manifest?.userInvocable === false))
+                              ) {
+                                setError(
+                                  s(
+                                    "Расширение больше недоступно в этом контексте.",
+                                    "Extension is no longer available in this context.",
+                                  ),
+                                );
+                                return;
+                              }
+                              onTry(current, extensionExample(current, locale));
+                              setOpen(false);
+                            } catch {
+                              if (requestEpoch !== epoch.current) return;
+                              setError(
+                                s(
+                                  "Не удалось проверить доступность расширения.",
+                                  "Could not check extension availability.",
+                                ),
+                              );
+                            } finally {
+                              if (requestEpoch === epoch.current)
+                                setPending(null);
+                            }
+                          }}
+                        >
+                          {s("Попробовать", "Try")}
+                        </Button>
+                      )}
                     </Flex>
                   </Box>
                 );

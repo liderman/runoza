@@ -1,4 +1,17 @@
 import {
+  dispatchConversationQueues,
+  pauseConversationQueue,
+} from "./conversation-queue.ts";
+export * from "./conversation-queue.ts";
+import {
+  queueModelRecovery,
+  modelRecoveryInstructions,
+  generationBudget,
+} from "@runoza/agent";
+import { readRunPlan, assertRollbackIdle } from "@runoza/resources";
+import { type RunPlan, type PlanTarget } from "@runoza/contracts";
+import { PLANNING_PROMPT } from "@runoza/agent";
+import {
   addActionHistory,
   contextSourceHash,
   restoreContext,
@@ -17,7 +30,11 @@ import {
   type ModelMetadata,
   type ModelOverride,
 } from "@runoza/contracts";
-import { AGENT_SYSTEM_PROMPT } from "@runoza/agent";
+import {
+  AGENT_SYSTEM_PROMPT,
+  codingConfig,
+  buildAgentPrompt,
+} from "@runoza/agent";
 import type { AgentRuntime } from "@runoza/agent";
 import { ExecutionError } from "@runoza/execution";
 import {
@@ -27,6 +44,10 @@ import {
   attachmentText,
   selectSources,
   sourceContext,
+  resolveRevisionReference,
+  revisionReferenceContext,
+  assertRevisionReferences,
+  type RevisionStorage,
 } from "@runoza/resources";
 import { randomUUID } from "node:crypto";
 import { sql, type Database } from "@runoza/db";
@@ -44,6 +65,8 @@ import type {
   ChatRun,
   Conversation,
   RunEvent,
+  RevisionReferenceInput,
+  ResolvedRevisionReference,
 } from "@runoza/contracts";
 export async function owned(
   db: Database,
@@ -111,7 +134,7 @@ export function branch(messages: ChatMessage[], head: string | null) {
 }
 export async function messagesFor(db: Database, id: string) {
   return (
-    await sql<ChatMessage>`SELECT m.id,m.parent_id,m.role,m.content,m.reasoning,m.parts,m.created_at,m.search_project,m.search_collection,COALESCE((SELECT jsonb_agg(jsonb_build_object('ordinal',s.ordinal,'name',f.name) ORDER BY s.ordinal) FROM message_sources s LEFT JOIN file_passages p ON p.id=s.passage_id LEFT JOIN files f ON f.id=p.file_id AND f.status='ready' AND f.searchable WHERE s.message_id=m.id),'[]'::jsonb) AS sources,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',f.id,'name',f.name,'size',f.size,'mediaType',f.media_type,'status',f.status,'projectId',f.project_id,'readable',f.text_content IS NOT NULL,'sha256',f.sha256) ORDER BY f.id) FROM message_attachments a JOIN files f ON f.id=a.file_id WHERE a.message_id=m.id),'[]'::jsonb) AS attachments FROM messages m WHERE conversation_id=${id}::uuid ORDER BY m.created_at,m.id`.execute(
+    await sql<ChatMessage>`SELECT m.id,m.parent_id,m.role,m.content,m.reasoning,m.parts,m.created_at,m.search_project,m.search_collection,COALESCE((SELECT jsonb_agg(ref - 'excerpt' ORDER BY ordinal) FROM jsonb_array_elements(m.revision_references) WITH ORDINALITY AS refs(ref,ordinal)),'[]'::jsonb) AS revision_references,COALESCE((SELECT jsonb_agg(jsonb_build_object('ordinal',s.ordinal,'name',f.name) ORDER BY s.ordinal) FROM message_sources s LEFT JOIN file_passages p ON p.id=s.passage_id LEFT JOIN files f ON f.id=p.file_id AND f.status='ready' AND f.searchable WHERE s.message_id=m.id),'[]'::jsonb) AS sources,COALESCE((SELECT jsonb_agg(jsonb_build_object('id',f.id,'name',f.name,'size',f.size,'mediaType',f.media_type,'status',f.status,'projectId',f.project_id,'readable',f.text_content IS NOT NULL,'sha256',f.sha256) ORDER BY f.id) FROM message_attachments a JOIN files f ON f.id=a.file_id WHERE a.message_id=m.id),'[]'::jsonb) AS attachments FROM messages m WHERE conversation_id=${id}::uuid ORDER BY m.created_at,m.id`.execute(
       db,
     )
   ).rows;
@@ -175,7 +198,29 @@ export async function runEvent(
       trx,
     );
     const next = status ?? r.status;
+    if (
+      ["failed", "cancelled"].includes(next) &&
+      ["resuming", "restored"].includes(r.model_journal_state ?? "")
+    ) {
+      r.model_journal_state = "blocked";
+      r.model_journal_reason = error ?? "RUN_CANCELLED";
+      await sql`UPDATE chat_runs SET model_journal_state='blocked',model_journal_reason=${r.model_journal_reason} WHERE id=${id}::uuid`.execute(
+        trx,
+      );
+    }
     if (["completed", "failed", "cancelled"].includes(next)) {
+      await sql`UPDATE research_runs SET status=${next === "cancelled" ? "cancelled" : "interrupted"},error_code=${error ?? "RESEARCH_INTERRUPTED"},finished_at=now() WHERE parent_run_id=${id}::uuid AND status='running'`.execute(
+        trx,
+      );
+      await sql`UPDATE code_actions SET status=${next === "cancelled" ? "cancelled" : "unknown"} WHERE run_id=${id}::uuid AND tool='research_readonly' AND status='running'`.execute(
+        trx,
+      );
+      await sql`UPDATE generation_attempts SET status=${next === "cancelled" ? "cancelled" : "interrupted"},error_code=${error ?? "RUN_FINISHED"},finished_at=now() WHERE run_id=${id}::uuid AND status='running'`.execute(
+        trx,
+      );
+      await sql`UPDATE workspace_changes SET status='unknown' WHERE run_id=${id}::uuid AND status='prepared'`.execute(
+        trx,
+      );
       await sql`UPDATE compaction_requests SET status='failed' WHERE run_id=${id}::uuid AND status='pending'`.execute(
         trx,
       );
@@ -183,11 +228,31 @@ export async function runEvent(
         trx,
       );
     }
+    if (
+      ["failed", "cancelled"].includes(next) ||
+      (next === "completed" &&
+        (
+          await sql`SELECT id FROM code_actions WHERE run_id=${id}::uuid AND status='unknown' LIMIT 1`.execute(
+            trx,
+          )
+        ).rows.length)
+    ) {
+      await pauseConversationQueue(
+        trx,
+        r.conversation_id,
+        next === "completed"
+          ? "UNKNOWN_ACTION"
+          : next === "cancelled"
+            ? "RUN_CANCELLED"
+            : "RUN_FAILED",
+      );
+    }
+    const runUsage = usage ?? r.usage;
     const seq = r.seq + 1;
-    await sql`UPDATE chat_runs SET seq=${seq},status=${next},error_code=${error},usage=${JSON.stringify(usage)}::jsonb,heartbeat_at=now(),finished_at=CASE WHEN ${next} IN ('completed','failed','cancelled') THEN now() ELSE NULL END WHERE id=${id}::uuid`.execute(
+    await sql`UPDATE chat_runs SET seq=${seq},status=${next},error_code=${error},usage=${JSON.stringify(runUsage)}::jsonb,heartbeat_at=now(),finished_at=CASE WHEN ${next} IN ('completed','failed','cancelled') THEN now() ELSE NULL END WHERE id=${id}::uuid`.execute(
       trx,
     );
-    await sql`INSERT INTO run_events(run_id,seq,payload) VALUES (${id}::uuid,${seq},${JSON.stringify({ seq, type, content: text, reasoning: thoughts, parts, status: next, error_code: error, usage, compaction_state: r.compaction_state, compaction_count: r.compaction_count })}::jsonb)`.execute(
+    await sql`INSERT INTO run_events(run_id,seq,payload) VALUES (${id}::uuid,${seq},${JSON.stringify({ seq, type, model_round: r.model_round, model_recovery_count: r.model_recovery_count, model_journal_state: r.model_journal_state, model_journal_reason: r.model_journal_reason, generation_calls: r.generation_calls, recovery_count: r.recovery_count, plan_version: r.plan_version, content: text, reasoning: thoughts, parts, status: next, error_code: error, usage: runUsage, code_state: r.code_state, compaction_state: r.compaction_state, compaction_count: r.compaction_count, microcompaction_count: r.microcompaction_count, context_estimate: r.context_estimate })}::jsonb)`.execute(
       trx,
     );
     return true;
@@ -198,6 +263,8 @@ export async function createRun(
   u: Identity,
   conversationId: string,
   input: {
+    intent?: "plan" | "execute";
+    planAcceptance?: { runId: string; version: number };
     approvalMode?: "ask" | "arbiter" | "full";
     mode?: "chat" | "code";
     executionTarget?: "server";
@@ -211,18 +278,46 @@ export async function createRun(
     searchProject?: boolean;
     collectionId?: string;
     fileIds?: string[];
+    revisionReferences?: RevisionReferenceInput[];
     skillVersionIds?: string[];
     mcpConnectionIds?: string[];
   },
-  { useConversationApproval = false } = {},
+  {
+    useConversationApproval = false,
+    storage,
+    queued,
+  }: {
+    useConversationApproval?: boolean;
+    storage?: RevisionStorage;
+    queued?: "preview" | "claim";
+  } = {},
 ) {
+  input = { ...input };
+  if (
+    (input.revisionReferences?.length ?? 0) > 4 ||
+    (input.retryMessageId && input.revisionReferences?.length)
+  )
+    fail(400, "INVALID_REQUEST");
   const compactionCommand =
     !input.retryMessageId &&
     /^\/compaction(?:\s+([\s\S]*))?$/.exec(input.content?.trim() ?? "");
   if (compactionCommand) {
+    if (input.revisionReferences?.length) fail(400, "INVALID_REQUEST");
     input.mode = "chat";
     delete input.executionTarget;
   } else if (input.executionTarget === "server") input.mode = "code";
+  if (
+    (input.intent === "plan" && (input.mode !== "code" || compactionCommand)) ||
+    (input.planAcceptance &&
+      (input.intent === "plan" ||
+        input.retryMessageId ||
+        compactionCommand ||
+        input.parentId !== undefined ||
+        input.fileIds?.length ||
+        input.revisionReferences?.length))
+  )
+    fail(400, "INVALID_REQUEST");
+  if (input.planAcceptance) input.mode = "code";
   const hash = digest(
     JSON.stringify([
       input.mode ?? "chat",
@@ -243,6 +338,9 @@ export async function createRun(
           ]
         : []),
       ...(input.approvalMode ? [input.approvalMode] : []),
+      ...(input.revisionReferences?.length ? [input.revisionReferences] : []),
+      ...(input.intent ? ["intent", input.intent] : []),
+      ...(input.planAcceptance ? ["planAcceptance", input.planAcceptance] : []),
     ]),
   );
   const create = async (trx: Database) => {
@@ -261,6 +359,64 @@ export async function createRun(
       if (existing.request_hash !== hash) fail(409, "IDEMPOTENCY_CONFLICT");
       return existing;
     }
+    if (queued !== "preview") await assertRollbackIdle(trx, c.id);
+    let intent = input.intent ?? "execute";
+    let acceptedPlan: RunPlan | null = null;
+    let planTarget: PlanTarget | null = null;
+    if (input.retryMessageId) {
+      const planned = (
+        await sql<ChatRun>`SELECT * FROM chat_runs WHERE conversation_id=${c.id}::uuid AND user_message_id=${input.retryMessageId}::uuid AND intent='plan' ORDER BY created_at DESC LIMIT 1`.execute(
+          trx,
+        )
+      ).rows[0];
+      if (planned) {
+        if (
+          !planned.plan_target ||
+          planned.plan_target.desktopWorkspaceId !==
+            (c.desktop_workspace_id ?? null)
+        )
+          fail(409, "PLAN_TARGET_CHANGED");
+        intent = "plan";
+        input.mode = "code";
+      }
+      // Execution accepted from a plan must be started again through explicit acceptance.
+      if (
+        (
+          await sql`SELECT id FROM chat_runs WHERE conversation_id=${c.id}::uuid AND user_message_id=${input.retryMessageId}::uuid AND accepted_plan IS NOT NULL`.execute(
+            trx,
+          )
+        ).rows.length
+      )
+        fail(409, "PLAN_ACCEPT_AGAIN");
+    }
+    if (input.planAcceptance) {
+      const source = (
+        await sql<ChatRun>`SELECT * FROM chat_runs WHERE id=${input.planAcceptance.runId}::uuid AND conversation_id=${c.id}::uuid FOR UPDATE`.execute(
+          trx,
+        )
+      ).rows[0];
+      if (!source || source.intent !== "plan" || source.status !== "completed")
+        fail(409, "PLAN_UNAVAILABLE");
+      if (c.head_id !== source.assistant_message_id)
+        fail(409, "PLAN_CONTEXT_CHANGED");
+      if (
+        !source.plan_target ||
+        source.plan_target.desktopWorkspaceId !==
+          (c.desktop_workspace_id ?? null)
+      )
+        fail(409, "PLAN_TARGET_CHANGED");
+      acceptedPlan = await readRunPlan(trx, source.id);
+      if (
+        !acceptedPlan ||
+        acceptedPlan.version !== input.planAcceptance.version
+      )
+        fail(409, "PLAN_CONFLICT");
+    }
+    if (intent === "plan" || acceptedPlan)
+      planTarget = {
+        conversationId: c.id,
+        desktopWorkspaceId: c.desktop_workspace_id ?? null,
+      };
     await chatEnabled(trx, u.organization_id);
     const savedApproval =
       useConversationApproval &&
@@ -368,8 +524,10 @@ export async function createRun(
         trx,
       )
     ).rows[0]!.count;
-    if (active >= settings.settings.max_parallel_runs) fail(429, "RUN_LIMIT");
+    if (queued !== "preview" && active >= settings.settings.max_parallel_runs)
+      fail(429, "RUN_LIMIT");
     if (
+      queued !== "preview" &&
       (
         await sql`SELECT id FROM chat_runs WHERE conversation_id=${c.id}::uuid AND status IN ('queued','running')`.execute(
           trx,
@@ -377,6 +535,15 @@ export async function createRun(
       ).rows.length
     )
       fail(409, "RUN_ACTIVE");
+    if (
+      !queued &&
+      (
+        await sql`SELECT i.id FROM conversation_queued_inputs i JOIN conversation_queues q ON q.conversation_id=i.conversation_id WHERE i.conversation_id=${c.id}::uuid AND i.status IN ('queued','needs_attention') AND NOT q.paused LIMIT 1`.execute(
+          trx,
+        )
+      ).rows.length
+    )
+      fail(409, "QUEUE_PENDING");
     const all = await messagesFor(trx, c.id);
     if (all.length >= 1000) fail(400, "HISTORY_LIMIT");
     let userId: string;
@@ -395,11 +562,21 @@ export async function createRun(
       if (input.collectionId && !input.searchProject)
         fail(400, "INVALID_REQUEST");
       if (input.searchProject && !c.project_id) fail(400, "INVALID_REQUEST");
+      if (acceptedPlan)
+        input.content =
+          "Execute the accepted plan, version " + acceptedPlan.version + ".";
       if (!input.content?.trim()) fail(400, "INVALID_REQUEST");
       userId = randomUUID();
       await sql`INSERT INTO messages(id,conversation_id,parent_id,role,content,search_project,search_collection) VALUES (${userId}::uuid,${c.id}::uuid,${parent}::uuid,'user',${input.content.trim()},${input.searchProject ?? false},${input.collectionId ?? null}::uuid)`.execute(
         trx,
       );
+      const references: ResolvedRevisionReference[] = [];
+      for (const ref of input.revisionReferences ?? [])
+        references.push(await resolveRevisionReference(trx, u, storage, ref));
+      if (references.length)
+        await sql`UPDATE messages SET revision_references=${JSON.stringify(references)}::jsonb WHERE id=${userId}::uuid`.execute(
+          trx,
+        );
       for (const id of [...new Set(input.fileIds ?? [])].sort()) {
         await sql`SELECT id FROM files WHERE id=${id}::uuid FOR SHARE`.execute(
           trx,
@@ -465,6 +642,21 @@ export async function createRun(
       fail(403, "SKILL_UNAVAILABLE");
     if (skills.some((s) => s.project_id && s.project_id !== c.project_id))
       fail(403, "FORBIDDEN");
+    if (
+      queued &&
+      skills.some(
+        (s) =>
+          !extensions.some(
+            (x) =>
+              x.kind === "skill" &&
+              x.id === s.skill_id &&
+              x.versionId === s.id &&
+              x.available &&
+              x.enabled,
+          ),
+      )
+    )
+      fail(403, "SKILL_UNAVAILABLE");
     const expandedSkills = skills.map((s) => ({
       ...s,
       content: (input.skillVersionIds ?? []).includes(s.id)
@@ -504,6 +696,16 @@ export async function createRun(
           .map((x) => x.id),
       ]),
     ];
+    if (
+      queued &&
+      mcpIds.some(
+        (id) =>
+          !extensions.some(
+            (x) => x.kind === "mcp" && x.id === id && x.available && x.enabled,
+          ),
+      )
+    )
+      fail(403, "MCP_UNAVAILABLE");
     for (const id of mcpIds) {
       const m = (
         await sql<{
@@ -524,11 +726,18 @@ export async function createRun(
       catalog?.metadata.reference?.tools === false
     )
       fail(400, "MODEL_TOOLS_UNSUPPORTED");
+    const revisionContext = await revisionReferenceContext(
+      trx,
+      u,
+      history.filter((m) => m.revision_references?.length).map((m) => m.id),
+      userId,
+    );
     const budgetHistory = await Promise.all(
       history.map(async (m) => ({
         role: m.role,
         content:
           m.content +
+          (revisionContext.content.get(m.id) ?? "") +
           (await attachmentText(
             trx,
             u,
@@ -622,14 +831,32 @@ export async function createRun(
       citationRules +
       discoveryContext +
       schemaContext +
-      skillContext;
+      skillContext +
+      (acceptedPlan
+        ? "\n\nAccepted plan snapshot (intent, not proof or permission; inspect current files and revalidate assumptions before changes):\n" +
+          JSON.stringify(acceptedPlan)
+        : "");
+    const config = codingConfig();
+    const prompt = buildAgentPrompt({
+      code: input.mode === "code",
+      planning: intent === "plan",
+      target: c.desktop_workspace_id ? "desktop" : "server",
+      instructions: projectInstructions,
+      structuredTools: config.structuredTools,
+    });
+    const systemPrompt =
+      config.promptVersion === "legacy-v1"
+        ? AGENT_SYSTEM_PROMPT +
+          projectInstructions +
+          (intent === "plan" ? "\n" + PLANNING_PROMPT : "")
+        : prompt.text;
     const budget = contextBudget(
       input.model,
       JSON.stringify({
         messages: [
           {
             role: "system",
-            content: AGENT_SYSTEM_PROMPT + projectInstructions,
+            content: systemPrompt,
           },
           // Older turns can be compacted by the worker; fixed instructions and
           // the current user request must fit without deleting either.
@@ -648,13 +875,32 @@ export async function createRun(
         budget,
       );
     const r = (
-      await sql<ChatRun>`INSERT INTO chat_runs(conversation_id,owner_id,request_id,request_hash,provider_id,model,user_message_id,assistant_message_id) VALUES (${c.id}::uuid,${u.id}::uuid,${input.requestId}::uuid,${hash},${input.providerId}::uuid,${input.model},${userId}::uuid,${assistant}::uuid) RETURNING *`.execute(
+      await sql<ChatRun>`INSERT INTO chat_runs(conversation_id,owner_id,request_id,request_hash,provider_id,model,user_message_id,assistant_message_id,status) VALUES (${c.id}::uuid,${u.id}::uuid,${input.requestId}::uuid,${hash},${input.providerId}::uuid,${input.model},${userId}::uuid,${assistant}::uuid,${queued === "preview" ? "cancelled" : "queued"}) RETURNING *`.execute(
         trx,
       )
     ).rows[0]!;
-    await sql`UPDATE chat_runs SET extension_manifest=${JSON.stringify({ version: 1, skills: [...skills.map((s) => ({ id: s.id, skillId: s.skill_id, name: s.name, version: s.version, manifest: s.manifest, loaded: true })), ...deferredSkills.map((s) => ({ ...s, loaded: false }))], mcp: mcpSnapshot.map(({ tool_catalog, ...m }) => ({ ...m, pinnedSchemas: pinnedTools.find((p) => p.connectionId === m.id)?.tools ?? [] })) })}::jsonb,deferred_skills=${JSON.stringify(deferredSkills)}::jsonb,approval_mode=${approvalMode},trace_parent=${currentTraceParent()},context_limit=${limits.contextTokens},max_agent_steps=${settings.settings.max_agent_steps},mode=${input.mode ?? "chat"},project_instructions=${projectInstructions},skill_versions=${JSON.stringify(skills.map((s) => ({ id: s.id, name: s.name, version: s.version, manifest: s.manifest, invocation: (input.skillVersionIds ?? []).includes(s.id) ? "manual" : "pinned" })))}::jsonb,mcp_connections=${JSON.stringify(mcpIds)}::jsonb,reasoning_config=${JSON.stringify(reasoning)}::jsonb WHERE id=${r.id}::uuid`.execute(
+    await sql`UPDATE chat_runs SET coding_config=${JSON.stringify(config)}::jsonb,prompt_fingerprint=${digest(systemPrompt)},extension_manifest=${JSON.stringify({ version: 1, skills: [...skills.map((s) => ({ id: s.id, skillId: s.skill_id, name: s.name, version: s.version, manifest: s.manifest, loaded: true })), ...deferredSkills.map((s) => ({ ...s, loaded: false }))], mcp: mcpSnapshot.map(({ tool_catalog, ...m }) => ({ ...m, pinnedSchemas: pinnedTools.find((p) => p.connectionId === m.id)?.tools ?? [] })) })}::jsonb,deferred_skills=${JSON.stringify(deferredSkills)}::jsonb,approval_mode=${approvalMode},trace_parent=${currentTraceParent()},context_limit=${limits.contextTokens},max_agent_steps=${settings.settings.max_agent_steps},mode=${input.mode ?? "chat"},project_instructions=${projectInstructions},skill_versions=${JSON.stringify(skills.map((s) => ({ id: s.id, name: s.name, version: s.version, manifest: s.manifest, invocation: (input.skillVersionIds ?? []).includes(s.id) ? "manual" : "pinned" })))}::jsonb,mcp_connections=${JSON.stringify(mcpIds)}::jsonb,reasoning_config=${JSON.stringify(reasoning)}::jsonb WHERE id=${r.id}::uuid`.execute(
       trx,
     );
+    await sql`UPDATE chat_runs SET intent=${intent},plan_target=${planTarget ? JSON.stringify(planTarget) : null}::jsonb,accepted_plan=${acceptedPlan ? JSON.stringify(acceptedPlan) : null}::jsonb WHERE id=${r.id}::uuid`.execute(
+      trx,
+    );
+    if (acceptedPlan) {
+      const content = {
+        summary: acceptedPlan.summary,
+        steps: acceptedPlan.steps.map((s) => ({
+          id: s.id,
+          title: s.title,
+          status: "pending",
+        })),
+      };
+      await sql`INSERT INTO run_plan_versions(run_id,version,content) VALUES (${r.id}::uuid,1,${JSON.stringify(content)}::jsonb)`.execute(
+        trx,
+      );
+      await sql`UPDATE chat_runs SET plan_version=1 WHERE id=${r.id}::uuid`.execute(
+        trx,
+      );
+    }
     if (compactionCommand)
       await sql`UPDATE chat_runs SET compaction_only=true,compaction_focus=${compactionCommand[1]?.slice(0, 2000) ?? ""} WHERE id=${r.id}::uuid`.execute(
         trx,
@@ -664,6 +910,11 @@ export async function createRun(
     );
     return {
       ...r,
+      intent,
+      plan_target: planTarget,
+      accepted_plan: acceptedPlan,
+      plan_version: acceptedPlan ? 1 : 0,
+      coding_config: config,
       context_limit: limits.contextTokens,
       approval_mode: approvalMode,
       mode: input.mode ?? ("chat" as const),
@@ -729,9 +980,11 @@ async function executeRunInternal(
   let lost = false;
   let lastFlush = 0;
   const stop = () => controller.abort();
+  let validateReferences: (() => Promise<void>) | undefined;
   const refresh = async () => {
+    await validateReferences?.();
     const ok = (
-      await sql`UPDATE chat_runs r SET heartbeat_at=now() FROM users u,conversations c,feature_flags f,provider_connections p WHERE r.id=${id}::uuid AND r.lease=${lease}::uuid AND r.status='running' AND u.id=r.owner_id AND NOT u.disabled AND EXISTS(SELECT 1 FROM memberships membership WHERE membership.user_id=u.id AND membership.organization_id=c.organization_id) AND (NOT EXISTS(SELECT 1 FROM schedule_runs sr WHERE sr.chat_run_id=r.id) OR f.flags->>'schedules'='true') AND c.id=r.conversation_id AND (c.project_id IS NULL OR EXISTS(SELECT 1 FROM projects pr LEFT JOIN project_members pm ON pm.project_id=pr.id AND pm.user_id=r.owner_id WHERE pr.id=c.project_id AND (pr.owner_id=r.owner_id OR pm.role='editor'))) AND f.organization_id=c.organization_id AND f.flags->>'chat'='true' AND p.id=r.provider_id AND p.enabled AND p.models ? r.model RETURNING r.id`.execute(
+      await sql`UPDATE chat_runs r SET heartbeat_at=now() FROM users u,conversations c,feature_flags f,provider_connections p WHERE r.id=${id}::uuid AND r.lease=${lease}::uuid AND r.status='running' AND u.id=r.owner_id AND NOT u.disabled AND EXISTS(SELECT 1 FROM memberships membership WHERE membership.user_id=u.id AND membership.organization_id=c.organization_id) AND (NOT EXISTS(SELECT 1 FROM schedule_runs sr WHERE sr.chat_run_id=r.id) OR f.flags->>'schedules'='true') AND c.id=r.conversation_id AND NOT EXISTS(SELECT 1 FROM conversation_queued_inputs qi WHERE qi.run_id=r.id AND ((qi.snapshot->>'desktopWorkspaceId') IS DISTINCT FROM c.desktop_workspace_id::text OR (qi.snapshot->>'projectId') IS DISTINCT FROM c.project_id::text)) AND (r.plan_target IS NULL OR (r.plan_target->>'desktopWorkspaceId') IS NOT DISTINCT FROM c.desktop_workspace_id::text) AND (c.project_id IS NULL OR EXISTS(SELECT 1 FROM projects pr LEFT JOIN project_members pm ON pm.project_id=pr.id AND pm.user_id=r.owner_id WHERE pr.id=c.project_id AND (pr.owner_id=r.owner_id OR pm.role='editor'))) AND f.organization_id=c.organization_id AND f.flags->>'chat'='true' AND p.id=r.provider_id AND p.enabled AND p.models ? r.model RETURNING r.id`.execute(
         db,
       )
     ).rows.length;
@@ -741,6 +994,18 @@ async function executeRunInternal(
     }
   };
   try {
+    if (run.model_recovery_count) {
+      const saved = (
+        await sql<{
+          content: string;
+          reasoning: string | null;
+        }>`SELECT content,reasoning FROM messages WHERE id=${run.assistant_message_id}::uuid`.execute(
+          db,
+        )
+      ).rows[0]!;
+      content = saved.content;
+      thoughts = saved.reasoning ?? "";
+    }
     await refresh();
     if (lost) throw new ProviderError("RUN_CANCELLED");
     const p = (
@@ -765,6 +1030,30 @@ async function executeRunInternal(
         db,
       )
     ).rows[0]!;
+    const refIdentity = {
+      id: run.owner_id,
+      organization_id: scope.organization_id,
+    };
+    const revisionContext = await revisionReferenceContext(
+      db,
+      refIdentity,
+      history.filter((m) => m.revision_references?.length).map((m) => m.id),
+      run.user_message_id,
+    ).catch(() => {
+      throw new ProviderError("REVISION_UNAVAILABLE");
+    });
+    if (revisionContext.references.length)
+      validateReferences = async () => {
+        await assertRevisionReferences(
+          db,
+          refIdentity,
+          revisionContext.references,
+        ).catch(() => {
+          throw new ProviderError("REVISION_UNAVAILABLE");
+        });
+      };
+    for (const m of history)
+      m.content += revisionContext.content.get(m.id) ?? "";
     for (const m of history)
       m.content += await attachmentText(
         db,
@@ -799,7 +1088,16 @@ async function executeRunInternal(
       );
     await refresh();
     if (lost) throw new ProviderError("RUN_CANCELLED");
-    await runEvent(db, id, "run.started", "", undefined, null, null, lease);
+    await runEvent(
+      db,
+      id,
+      "run.started",
+      content,
+      undefined,
+      null,
+      null,
+      lease,
+    );
     const signal = AbortSignal.any([
       controller.signal,
       AbortSignal.timeout(run.mode === "code" ? 3600000 : 600000),
@@ -809,6 +1107,13 @@ async function executeRunInternal(
       key: secretBox(providerKey).open(p.secret_ciphertext, "provider:" + p.id),
     };
     await addActionHistory(db, history);
+    const durablePlan = await readRunPlan(db, id);
+    if (run.model_recovery_count)
+      run.project_instructions = await modelRecoveryInstructions(db, id);
+    else if (durablePlan)
+      run.project_instructions +=
+        "\n\nCurrent durable plan (update via plan_update; statuses are intent, not test evidence):\n" +
+        JSON.stringify(durablePlan);
     const sourceHash = contextSourceHash(history, run.project_instructions);
     const contextHistory = run.compaction_only ? history.slice(0, -1) : history;
     const restored = await restoreContext(
@@ -819,7 +1124,26 @@ async function executeRunInternal(
       run.project_instructions,
       run.model,
     );
+    const generation = generationBudget(db, id, {
+      lease,
+      authorize: async () => {
+        await refresh();
+        if (lost) throw new ProviderError("RUN_CANCELLED");
+      },
+      notify: () =>
+        runEvent(
+          db,
+          id,
+          "generation.updated",
+          undefined,
+          undefined,
+          null,
+          null,
+          lease,
+        ),
+    });
     const prepareContext = contextManager({
+      generation,
       db,
       runId: id,
       lease,
@@ -827,6 +1151,8 @@ async function executeRunInternal(
       conversation: run.conversation_id,
       anchor: run.user_message_id,
       sourceHash,
+      microcompaction: run.coding_config?.microcompaction === true,
+      loopGuard: run.coding_config?.loopGuard === true,
       model: run.model,
       contextLimit: run.context_limit ?? 131072,
       reasoning: run.reasoning_config,
@@ -877,6 +1203,7 @@ async function executeRunInternal(
     ) {
       if (!runtime) throw new ExecutionError("CODE_NOT_CONFIGURED");
       const result = await runtime.run({
+        generation,
         id,
         model: run.model,
         connection: c,
@@ -969,6 +1296,7 @@ async function executeRunInternal(
       run.reasoning_config,
       run.context_limit,
       plainContext.filter((m) => m.role !== "system"),
+      { hooks: generation, signal },
     )) {
       if (lost) throw new ProviderError("RUN_CANCELLED");
       // Flush the previous kind before changing channels; otherwise buffered text
@@ -1059,6 +1387,20 @@ async function executeRunInternal(
     }
     if (!completed && !lost) throw new ProviderError("STREAM_INTERRUPTED");
   } catch (e) {
+    const code =
+      e instanceof ProviderError || e instanceof ExecutionError
+        ? e.code
+        : "PROVIDER_UNAVAILABLE";
+    if (
+      !lost &&
+      [
+        "PROVIDER_UNAVAILABLE",
+        "STREAM_INTERRUPTED",
+        "PROVIDER_TIMEOUT",
+      ].includes(code) &&
+      (await queueModelRecovery(db, id, { lease, reason: code }))
+    )
+      return;
     failure(
       lost
         ? "RUN_CANCELLED"
@@ -1091,6 +1433,7 @@ export async function startChatWorker(
   boss: ReturnType<typeof createJobs>,
   providerKey: string,
   runtime?: AgentRuntime,
+  storage?: RevisionStorage,
 ) {
   if (!/^[a-f0-9]{64}$/i.test(providerKey))
     throw Error("Invalid PROVIDER_SECRETS_KEY");
@@ -1115,7 +1458,14 @@ export async function startChatWorker(
           db,
         )
       ).rows;
-      for (const r of stale)
+      for (const r of stale) {
+        if (
+          await queueModelRecovery(db, r.id, {
+            stale: true,
+            reason: "WORKER_INTERRUPTED",
+          })
+        )
+          continue;
         await runEvent(
           db,
           r.id,
@@ -1124,10 +1474,13 @@ export async function startChatWorker(
           "failed",
           "WORKER_INTERRUPTED",
         );
+      }
+      await dispatchConversationQueues(db, storage);
       const queued = (
         await sql<{
           id: string;
-        }>`SELECT id FROM chat_runs WHERE status='queued' ORDER BY created_at LIMIT 100`.execute(
+          model_dispatch_id: string | null;
+        }>`SELECT id,model_dispatch_id FROM chat_runs WHERE status='queued' ORDER BY created_at LIMIT 100`.execute(
           db,
         )
       ).rows;
@@ -1136,8 +1489,8 @@ export async function startChatWorker(
           "chat.run",
           { runId: r.id },
           {
-            id: r.id,
-            singletonKey: r.id,
+            id: r.model_dispatch_id ?? r.id,
+            singletonKey: r.model_dispatch_id ?? r.id,
             retryLimit: 0,
             expireInSeconds: 3900,
           },

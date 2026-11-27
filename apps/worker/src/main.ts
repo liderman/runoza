@@ -100,6 +100,7 @@ async function main() {
       boss,
       process.env.PROVIDER_SECRETS_KEY ?? "",
       runtime,
+      storage,
     );
     startupStage = "schedules";
     stopSchedules = startScheduleWorker(db, () =>

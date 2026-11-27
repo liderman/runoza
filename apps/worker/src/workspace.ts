@@ -1,4 +1,7 @@
 import { SharedTerminalProvider } from "@runoza/execution/shared";
+import { runRollbackPreview } from "./rollback-preview.ts";
+import { runRollbackApply } from "./rollback-apply.ts";
+import { interruptRollbacks } from "@runoza/resources";
 import { runEvent } from "@runoza/chat";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
@@ -38,6 +41,9 @@ interface Request {
   generation: string;
   operation: string;
   arguments: {
+    runId?: string;
+    desktopWorkspaceId?: string | null;
+    projectId?: string | null;
     path?: string;
     text?: string;
     terminalId?: string;
@@ -82,6 +88,10 @@ export function startWorkspaceWorker(
     return bridge;
   }
   async function process(request: Request) {
+    if (request.operation === "rollback.apply")
+      return runRollbackApply(db, pool, storage, request.id, signal);
+    if (request.operation === "rollback.preview")
+      return runRollbackPreview(db, pool, storage, request, signal);
     const {
       conversation_id: conversationId,
       actor_id: actor,
@@ -348,6 +358,7 @@ export function startWorkspaceWorker(
           ).rows[0]!.ok;
           if (!elected) return;
           // The previous leader is gone. Never replay in-flight keystrokes or writes.
+          await interruptRollbacks(db);
           await sql`UPDATE workspace_requests SET status='failed',error_code='EXECUTION_UNKNOWN',arguments='{}',finished_at=now() WHERE status='running'`.execute(
             db,
           );

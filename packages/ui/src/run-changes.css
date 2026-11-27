@@ -1,0 +1,97 @@
+.run-changes-layout {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) minmax(0, 3fr);
+  gap: var(--g-spacing-4);
+}
+.run-changes-list {
+  max-height: 60vh;
+  overflow: auto;
+  min-width: 0;
+}
+.run-change-entry {
+  border-bottom: 1px solid var(--g-color-line-generic);
+  padding-block: var(--g-spacing-2);
+  overflow-wrap: anywhere;
+}
+.run-change-select {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--g-spacing-7);
+}
+.run-change-path {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+.run-changes-detail {
+  min-width: 0;
+}
+.run-change-diff {
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid var(--g-color-line-generic);
+  border-radius: var(--g-border-radius-m);
+  direction: ltr;
+}
+.run-change-diff:focus-visible {
+  outline: 2px solid var(--g-color-line-focus);
+  outline-offset: 2px;
+}
+.run-change-diff table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-family: var(--g-font-family-monospace);
+  font-size: var(--g-text-code-1-font-size);
+}
+.run-change-diff th,
+.run-change-diff td {
+  padding: var(--g-spacing-half) var(--g-spacing-2);
+  text-align: left;
+  vertical-align: top;
+}
+.run-change-diff td:nth-child(-n + 3) {
+  width: 1%;
+  user-select: none;
+  color: var(--g-color-text-secondary);
+}
+.run-change-diff code {
+  white-space: pre;
+  font: inherit;
+}
+.run-diff-add {
+  background: var(--g-color-base-positive-light);
+}
+.run-diff-remove {
+  background: var(--g-color-base-danger-light);
+}
+.run-diff-hunk {
+  background: var(--g-color-base-generic);
+  color: var(--g-color-text-secondary);
+}
+.run-diff-eol {
+  font-size: var(--g-text-caption-1-font-size);
+  color: var(--g-color-text-secondary);
+  white-space: nowrap;
+}
+@media (max-width: 40rem) {
+  .run-changes-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .run-changes-list {
+    max-height: 24vh;
+  }
+  .run-change-diff {
+    max-height: 40vh;
+  }
+}
+.revision-range-controls > * {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+.revision-reference-chip {
+  border: 1px solid var(--g-color-line-generic);
+  border-radius: var(--g-border-radius-m);
+  padding: var(--g-spacing-2);
+  min-width: 0;
+}

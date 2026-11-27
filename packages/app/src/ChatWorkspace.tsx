@@ -1,17 +1,29 @@
 import {
+  ConversationQueuePanel,
+  useConversationQueue,
+  useQueueSubmission,
+} from "./ConversationQueue.tsx";
+import type { QueuedInputContent } from "@runoza/contracts";
+import { RunPlanPanel } from "./RunPlan.tsx";
+import {
+  RevisionComposerContext,
+  ReferenceChips,
+} from "./revision-composer.tsx";
+import {
+  referenceInput,
+  MAX_REVISION_REFERENCES,
+  type RevisionReference,
+} from "@runoza/contracts";
+import {
   useConversationDraft,
+  useDraftAcknowledgement,
   useAdoptConversationDraft,
   useDraftPatch,
 } from "./conversation-drafts.tsx";
 import { useCapabilities } from "./capabilities.tsx";
 import { LoadingPanel } from "@runoza/ui";
-import { ConversationHistory } from "./ConversationHistory.tsx";
-import {
-  TranscriptProvider,
-  transcriptContent,
-  transcriptRegistry,
-  type ActionPart,
-} from "./MessageTranscript.tsx";
+import { ChatHistory } from "./ChatHistory.tsx";
+import { useEventCallback } from "./useEventCallback.ts";
 import { useQuery } from "@tanstack/react-query";
 import { ExtensionPicker } from "./ExtensionPicker.tsx";
 import { useCollections } from "./ProjectCollections.tsx";
@@ -23,13 +35,10 @@ import { ReasoningControl } from "./ReasoningControl.tsx";
 import { ConversationInfo } from "./ConversationInfo.tsx";
 import { ModelLogo, modelSummary } from "./ModelFacts.tsx";
 import { CodeWorkspace } from "./CodeWorkspace.tsx";
-import { RunActivity } from "./RunActivity.tsx";
+import { RunStatusStrip } from "./RunStatusStrip.tsx";
+import { ContextMeter } from "./ContextMeter.tsx";
 import {
-  Pencil,
   Xmark,
-  Copy,
-  BranchesRight,
-  ArrowRotateLeft,
   ArrowUp,
   CircleStop,
   ChevronDown,
@@ -42,15 +51,14 @@ import { FilesPanel } from "./Resources.tsx";
 import { resourceText } from "./resource-locales.ts";
 import type { ProjectView } from "@runoza/contracts";
 import { useContext, useEffect, useRef, useState, type Ref } from "react";
-import { MessageList, type TChatMessage } from "@gravity-ui/aikit";
 import {
   Portal,
+  Checkbox,
   Button,
   Select,
   Flex,
   Alert,
   Dialog,
-  Disclosure,
   TextInput,
   TextArea,
   Text,
@@ -96,6 +104,14 @@ export function ChatWorkspace({
   const capabilities = useCapabilities(api);
   const adoptDraft = useAdoptConversationDraft(draftKey);
   const patchDraft = useDraftPatch();
+  const captureDraft = useDraftAcknowledgement(draftKey);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const selectConversation = (next: string | null) => {
     if (next && !initialChat) adoptDraft(next);
     onSelect(next);
@@ -108,7 +124,15 @@ export function ChatWorkspace({
     draftKey + ":reasoning",
     "default",
   );
+  const [planning, setPlanning] = useConversationDraft(
+    draftKey + ":planning",
+    false,
+  );
   const [prompt, setPrompt] = useConversationDraft(draftKey + ":prompt", "");
+  const [revisionReferences, setRevisionReferences] = useConversationDraft<
+    RevisionReference[]
+  >(draftKey + ":revision-references", []);
+  const promptControl = useRef<HTMLTextAreaElement>(null);
   const [searchProject, setSearchProject] = useConversationDraft(
     draftKey + ":search-project",
     false,
@@ -224,7 +248,6 @@ export function ChatWorkspace({
   const [chats, setChats] = useState<Conversation[]>([]),
     [providerFilter, setProviderFilter] = useState(""),
     [keyboardMode, setKeyboardMode] = useState(false),
-    [copied, setCopied] = useState<string | null>(null),
     [snapshot, setSnapshot] = useState<ChatSnapshot | null>(null),
     [id, setId] = useState(initialChat),
     [busy, setBusy] = useState(false),
@@ -375,6 +398,7 @@ export function ChatWorkspace({
     Boolean(
       prompt.trim() ||
         fileIds.length ||
+        revisionReferences.length ||
         searchProject ||
         (dialog === "edit" && draft !== (editing?.content ?? "")) ||
         (dialog === "rename" && draft !== (snapshot?.conversation.title ?? "")),
@@ -382,6 +406,7 @@ export function ChatWorkspace({
     () => {
       setPrompt("");
       setFileIds([]);
+      setRevisionReferences([]);
       setSearchProject(false);
       setDialog(null);
     },
@@ -396,6 +421,53 @@ export function ChatWorkspace({
   const active = snapshot?.runs.find((r) =>
     ["queued", "running"].includes(r.status),
   );
+  const queue = useConversationQueue(api, id, (chatId) => {
+    if (current.current === chatId) setSubscription((n) => n + 1);
+  });
+  const queueSubmission = useQueueSubmission(api, id, draftKey, (chatId) => {
+    if (current.current === chatId) setSubscription((n) => n + 1);
+  });
+  const queueWaiting = queue.items.some(
+    (item) => item.status === "queued" || item.status === "needs_attention",
+  );
+  const queueLabel = locale === "ru" ? "Добавить следующим" : "Add next";
+  const queueSelection: Partial<QueuedInputContent> = {
+    ...(selected
+      ? {
+          providerId: JSON.parse(selected)[0] as string,
+          model: JSON.parse(selected)[1] as string,
+        }
+      : {}),
+    reasoning,
+    approvalMode: effectiveApprovalMode,
+    mode: executionEnabled ? "code" : "chat",
+    executionTarget: executionEnabled ? "server" : undefined,
+    intent: executionEnabled && planning ? "plan" : "execute",
+    skillVersionIds,
+    mcpConnectionIds,
+  };
+  async function enqueueDraft(content: string) {
+    if (
+      !id ||
+      !modelAvailable ||
+      approvalUnavailable ||
+      readOnly ||
+      busy ||
+      !content.trim()
+    )
+      return false;
+    await queueSubmission.submit({
+      ...queueSelection,
+      content,
+      providerId: JSON.parse(selected)[0] as string,
+      model: JSON.parse(selected)[1] as string,
+      searchProject,
+      collectionId: searchProject ? collectionId || undefined : undefined,
+      fileIds,
+      revisionReferences: revisionReferences.map(referenceInput),
+    });
+    return undefined;
+  }
   function report(e: unknown) {
     if (e instanceof IdentityApiError && e.status === 401) onExpired();
     setContextError("");
@@ -566,7 +638,12 @@ export function ChatWorkspace({
     content: string,
     retryMessageId?: string,
     parentId?: string | null,
+    options: {
+      preserveDraft?: boolean;
+      planAcceptance?: { runId: string; version: number };
+    } = {},
   ) {
+    const draftAck = captureDraft();
     const command =
       !retryMessageId && /^\/compaction(?:\s+([\s\S]*))?$/.exec(content.trim());
     if (command && active && id && !busy && !readOnly) {
@@ -576,11 +653,20 @@ export function ChatWorkspace({
           requestId: crypto.randomUUID(),
           focus: (command[1] ?? "").slice(0, 2000),
         });
+        if (!options.preserveDraft) draftAck.acknowledge({ prompt: "" });
         await load(id);
         accepted = true;
       });
       return accepted ? undefined : false;
     }
+    if (
+      !command &&
+      !retryMessageId &&
+      parentId === undefined &&
+      !options.planAcceptance &&
+      (active || queueWaiting)
+    )
+      return enqueueDraft(content);
     if (
       !modelAvailable ||
       (!command && approvalUnavailable) ||
@@ -589,6 +675,13 @@ export function ChatWorkspace({
       readOnly
     )
       return false;
+    const sendingReferences =
+      !retryMessageId && !command && !options.planAcceptance
+        ? (parentId !== undefined
+            ? (editing?.revision_references ?? [])
+            : revisionReferences
+          ).map(referenceInput)
+        : [];
     let successful = false;
     await action(async () => {
       const [providerId, model] = JSON.parse(selected);
@@ -611,6 +704,8 @@ export function ChatWorkspace({
       const signature = JSON.stringify([
         chatId,
         executionEnabled ? "server" : null,
+        planning,
+        options.planAcceptance,
         providerId,
         model,
         reasoning,
@@ -621,6 +716,7 @@ export function ChatWorkspace({
         retryMessageId,
         parentId,
         fileIds,
+        sendingReferences,
         searchProject,
         collectionId,
       ]);
@@ -632,33 +728,44 @@ export function ChatWorkspace({
           ...(executionEnabled && !command
             ? { executionTarget: "server" }
             : {}),
+          ...(options.planAcceptance
+            ? { planAcceptance: options.planAcceptance }
+            : executionEnabled && planning && !command
+              ? { intent: "plan" }
+              : {}),
           providerId,
           model,
           reasoning,
           approvalMode: effectiveApprovalMode,
-          skillVersionIds,
-          mcpConnectionIds,
+          skillVersionIds: options.planAcceptance ? [] : skillVersionIds,
+          mcpConnectionIds: options.planAcceptance ? [] : mcpConnectionIds,
           ...(retryMessageId
             ? { retryMessageId }
             : {
                 content,
-                searchProject: command
-                  ? false
-                  : parentId !== undefined
-                    ? editing?.search_project
-                    : searchProject,
-                collectionId: command
-                  ? undefined
-                  : parentId !== undefined
-                    ? (editing?.search_collection ?? undefined)
-                    : searchProject
-                      ? collectionId || undefined
-                      : undefined,
-                fileIds: command
-                  ? []
-                  : parentId !== undefined
-                    ? (editing?.attachments ?? []).map((f) => f.id)
-                    : fileIds,
+                searchProject:
+                  command || options.planAcceptance
+                    ? false
+                    : parentId !== undefined
+                      ? editing?.search_project
+                      : searchProject,
+                collectionId:
+                  command || options.planAcceptance
+                    ? undefined
+                    : parentId !== undefined
+                      ? (editing?.search_collection ?? undefined)
+                      : searchProject
+                        ? collectionId || undefined
+                        : undefined,
+                ...(sendingReferences.length
+                  ? { revisionReferences: sendingReferences }
+                  : {}),
+                fileIds:
+                  command || options.planAcceptance
+                    ? []
+                    : parentId !== undefined
+                      ? (editing?.attachments ?? []).map((f) => f.id)
+                      : fileIds,
                 ...(parentId !== undefined ? { parentId } : {}),
               }),
         })
@@ -678,7 +785,17 @@ export function ChatWorkspace({
           throw error;
         });
       pending.current = null;
-      if (!command) {
+      if (!retryMessageId && parentId === undefined && !options.planAcceptance)
+        draftAck.acknowledge({
+          ...(!command ? { "revision-references": [] } : {}),
+          ...(!options.preserveDraft ? { prompt: "" } : {}),
+        });
+      if (
+        !command &&
+        !retryMessageId &&
+        parentId === undefined &&
+        !options.planAcceptance
+      ) {
         setFileIds([]);
         setSearchProject(false);
         setSkillVersionIds([]);
@@ -687,214 +804,68 @@ export function ChatWorkspace({
       setSubscription((n) => n + 1);
       await list();
       successful = true;
-      if (!retryMessageId) setPrompt("");
-      // The run is persisted; acknowledge this draft before the synchronous router blocker.
-      const entry = navigation.entries.get(composerGuard);
-      if (entry) entry.dirty = false;
-      selectConversation(chatId);
+      if (
+        !options.preserveDraft &&
+        !retryMessageId &&
+        parentId === undefined &&
+        mounted.current &&
+        current.current === chatId
+      ) {
+        // A later draft remains dirty after the earlier request was accepted.
+        const entry = navigation.entries.get(composerGuard);
+        if (
+          entry &&
+          draftAck.unchanged() &&
+          (!command ||
+            !(revisionReferences.length || fileIds.length || searchProject))
+        )
+          entry.dirty = false;
+        selectConversation(chatId);
+      }
     });
     return successful ? undefined : false;
   }
-  const branch: ChatMessage[] = [];
-  const map = new Map(snapshot?.messages.map((m) => [m.id, m]));
-  let head = snapshot?.conversation.head_id;
-  const seen = new Set<string>();
-  while (head && !seen.has(head)) {
-    seen.add(head);
-    const m = map.get(head);
-    if (!m) break;
-    branch.unshift(m);
-    head = m.parent_id;
-  }
-  const messages: TChatMessage<ActionPart>[] = branch.map((m) => ({
-    ...m,
-    ...(m.role === "assistant"
-      ? {
-          role: "assistant" as const,
-          content: transcriptContent(
-            m,
-            snapshot?.runs.find((r) => r.assistant_message_id === m.id),
-            locale,
-          ),
+  const historyFork = useEventCallback((messageId: string) => {
+    void action(async () => {
+      if (!id) return;
+      const next = await api.request<
+        Conversation & {
+          draft?: string;
+          draftRevisionReferences?: RevisionReference[];
         }
-      : { role: "user" as const, content: m.content }),
-    ...(m.role === "user"
-      ? {
-          fileAttachments: (m.attachments ?? []).map((f) => ({
-            id: f.id,
-            name: f.name,
-            mimeType: f.mediaType,
-          })),
-        }
-      : {}),
-    timestamp:
-      new Date(m.created_at).toDateString() === new Date().toDateString()
-        ? new Date(m.created_at).toLocaleTimeString(locale, {
-            hour: "2-digit",
-            minute: "2-digit",
-          })
-        : new Date(m.created_at).toLocaleString(locale, {
-            day: "numeric",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-    actions: [
-      <Text
-        key="time"
-        variant="caption-2"
-        color="secondary"
-        title={new Date(m.created_at).toLocaleString(locale)}
-      >
-        {new Date(m.created_at).toDateString() === new Date().toDateString()
-          ? new Date(m.created_at).toLocaleTimeString(locale, {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : new Date(m.created_at).toLocaleString(locale, {
-              day: "numeric",
-              month: "short",
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-      </Text>,
-      <Button
-        key="copy"
-        size="s"
-        view="flat"
-        aria-label={
-          copied === m.id
-            ? locale === "ru"
-              ? "Скопировано"
-              : "Copied"
-            : locale === "ru"
-              ? "Копировать Markdown"
-              : "Copy Markdown"
-        }
-        title={
-          copied === m.id
-            ? locale === "ru"
-              ? "Скопировано"
-              : "Copied"
-            : locale === "ru"
-              ? "Копировать Markdown"
-              : "Copy Markdown"
-        }
-        onClick={() => {
-          void navigator.clipboard
-            .writeText(m.content)
-            .then(() => setCopied(m.id))
-            .catch(() => setError("error"));
-        }}
-      >
-        <Icon data={Copy} />
-      </Button>,
-      <Button
-        key="fork"
-        size="s"
-        view="flat"
-        aria-label={
-          locale === "ru" ? "Ветка в новой беседе" : "Branch in new chat"
-        }
-        title={locale === "ru" ? "Ветка в новой беседе" : "Branch in new chat"}
-        disabled={readOnly || busy || Boolean(active)}
-        onClick={() =>
-          void action(async () => {
-            if (!id) return;
-            const next = await api.request<Conversation & { draft?: string }>(
-              "/conversations/" + id + "/fork",
-              "POST",
-              { messageId: m.id },
-            );
-            current.current = next.id;
-            setId(next.id);
-            patchDraft(next.id, {
-              prompt: next.draft ?? "",
-              model: selected,
-              reasoning,
-              files: [],
-            });
-            await load(next.id);
-            await list();
-            selectConversation(next.id);
-          })
-        }
-      >
-        <Icon data={BranchesRight} />
-      </Button>,
-      ...(m.role === "assistant" &&
-      (snapshot?.runs.filter((r) => r.user_message_id === m.parent_id).length ??
-        0) > 1
-        ? [
-            <Select
-              key="versions"
-              size="s"
-              aria-label={
-                locale === "ru" ? "Версия ответа" : "Response version"
-              }
-              value={[m.id]}
-              disabled={readOnly || Boolean(active)}
-              options={snapshot!.runs
-                .filter((r) => r.user_message_id === m.parent_id)
-                .map((r, i) => ({
-                  value: r.assistant_message_id,
-                  content: `${i + 1} · ${r.model}`,
-                }))}
-              onUpdate={(v) =>
-                void action(async () => {
-                  if (id) {
-                    await api.request("/conversations/" + id, "PATCH", {
-                      headId: v[0],
-                    });
-                    await load(id);
-                  }
-                })
-              }
-            />,
-          ]
-        : []),
-      ...(m.attachments ?? []).map((f) => (
-        <Button
-          key={f.id}
-          size="s"
-          href={api.url("/files/" + f.id + "/content")}
-        >
-          {f.name}
-        </Button>
-      )),
-      ...(m.role === "user"
-        ? [
-            <Button
-              key="edit"
-              size="s"
-              view="flat"
-              aria-label={t("branch")}
-              title={t("branch")}
-              disabled={readOnly || Boolean(active) || busy}
-              onClick={() => {
-                setEditing(m);
-                setDraft(m.content);
-                setDialog("edit");
-              }}
-            >
-              <Icon data={Pencil} />
-            </Button>,
-          ]
-        : [
-            <Button
-              key="retry"
-              size="s"
-              view="flat"
-              aria-label={t("retry")}
-              title={t("retry")}
-              disabled={readOnly || Boolean(active) || busy || !selected}
-              onClick={() => void send("", m.parent_id ?? undefined)}
-            >
-              <Icon data={ArrowRotateLeft} />
-            </Button>,
-          ]),
-    ],
-  }));
+      >("/conversations/" + id + "/fork", "POST", { messageId });
+      current.current = next.id;
+      setId(next.id);
+      patchDraft(next.id, {
+        prompt: next.draft ?? "",
+        "revision-references": next.draftRevisionReferences ?? [],
+        model: selected,
+        reasoning,
+        files: [],
+      });
+      await load(next.id);
+      await list();
+      selectConversation(next.id);
+    });
+  });
+  const historyVersion = useEventCallback((headId: string) => {
+    void action(async () => {
+      if (id) {
+        await api.request("/conversations/" + id, "PATCH", { headId });
+        await load(id);
+      }
+    });
+  });
+  const historyEdit = useEventCallback((message: ChatMessage) => {
+    setEditing(message);
+    setDraft(message.content);
+    setDialog("edit");
+  });
+  const historyRetry = useEventCallback((parentId?: string) => {
+    void send("", parentId);
+  });
+  const historySource = useEventCallback(openSource);
+  const historyError = useEventCallback(() => setError("error"));
   const lastRun = snapshot?.runs.find(
     (r) => r.assistant_message_id === snapshot.conversation.head_id,
   );
@@ -1014,1035 +985,1154 @@ export function ChatWorkspace({
     </Flex>
   );
   return (
-    <div
-      onKeyDownCapture={(e) => {
-        if (e.key === "Tab") setKeyboardMode(true);
-      }}
-      onPointerMove={() => setKeyboardMode(false)}
-      className={
-        "conversation-layout" + (panelOpen ? " conversation-layout_panel" : "")
+    <RevisionComposerContext.Provider
+      value={
+        id
+          ? {
+              conversationId: id,
+              disabled:
+                readOnly ||
+                busy ||
+                revisionReferences.length >= MAX_REVISION_REFERENCES,
+              add: (reference) => {
+                if (
+                  current.current !== id ||
+                  readOnly ||
+                  busy ||
+                  revisionReferences.length >= MAX_REVISION_REFERENCES
+                )
+                  return false;
+                setRevisionReferences((refs) =>
+                  refs.some(
+                    (r) =>
+                      JSON.stringify(referenceInput(r)) ===
+                      JSON.stringify(referenceInput(reference)),
+                  )
+                    ? refs
+                    : [...refs, reference].slice(0, MAX_REVISION_REFERENCES),
+                );
+                const focusComposer = () => {
+                  if (compactWorkspace) setPanelOpen(false);
+                  requestAnimationFrame(() => {
+                    if (mounted.current && current.current === id)
+                      promptControl.current?.focus({ preventScroll: true });
+                  });
+                };
+                if (panelOpen && compactWorkspace && fileGuard.current)
+                  navigation.navigate(focusComposer, fileGuard.current);
+                else focusComposer();
+                return true;
+              },
+            }
+          : null
       }
     >
       <div
-        className="chat-workspace"
-        inert={(panelOpen || infoOpen) && compactWorkspace}
+        onKeyDownCapture={(e) => {
+          if (e.key === "Tab") setKeyboardMode(true);
+        }}
+        onPointerMove={() => setKeyboardMode(false)}
+        className={
+          "conversation-layout" +
+          (panelOpen ? " conversation-layout_panel" : "")
+        }
       >
-        {headerHost ? (
-          <Portal container={headerHost}>{toolbar}</Portal>
-        ) : (
-          toolbar
-        )}
-        {capabilities.error && (
-          <Alert
-            theme="warning"
-            message={
-              locale === "ru"
-                ? "Не удалось обновить доступность функций. Новые действия проверяются сервером."
-                : "Could not refresh feature availability. New actions are checked by the server."
-            }
-          />
-        )}
-        {codeEnabled && !executionEnabled && (
-          <Alert
-            theme="info"
-            message={
-              locale === "ru"
-                ? "Серверная среда выполнения не настроена. Чат и HTTP MCP доступны; для локальных команд выберите папку в десктопном клиенте."
-                : "No server execution environment is configured. Chat and HTTP MCP remain available; choose a folder in the desktop client for local commands."
-            }
-          />
-        )}
-        {readOnly && <Alert theme="info" message={rt("readOnly")} />}
-        {error && (
-          <Alert
-            theme="danger"
-            onClose={() => setError("")}
-            message={
-              [
-                "FILE_UNAVAILABLE",
-                "FILE_NOT_READABLE",
-                "ATTACHMENT_LIMIT",
-              ].includes(error)
-                ? rt(error)
-                : ["CONTEXT_LIMIT", "EXTENSION_CONTEXT_LIMIT"].includes(
-                      error,
-                    ) && contextError
-                  ? contextError
-                  : t(error)
-            }
-          />
-        )}
-        {defaultsQuery.isError && !initialChat && (
-          <Alert
-            theme="warning"
-            message={
-              locale === "ru"
-                ? "Не удалось загрузить модель по умолчанию. Повторите загрузку или выберите модель вручную."
-                : "Could not load your default model. Retry or choose a model manually."
-            }
-            actions={
-              <Button onClick={() => void defaultsQuery.refetch()}>
-                {locale === "ru" ? "Повторить" : "Retry"}
-              </Button>
-            }
-          />
-        )}
-        {modelsQuery.isError && (
-          <Alert
-            theme="warning"
-            message={
-              locale === "ru"
-                ? "Не удалось обновить каталог моделей."
-                : "Could not refresh the model catalog."
-            }
-            actions={
-              <Button onClick={() => void modelsQuery.refetch()}>
-                {locale === "ru" ? "Повторить" : "Retry"}
-              </Button>
-            }
-          />
-        )}
-        {!modelsQuery.isPending && selected && !modelAvailable && (
-          <Alert
-            theme="warning"
-            message={
-              locale === "ru"
-                ? "Выбранная модель отключена или недоступна. Выберите замену в меню модели; ваш текст сохранён."
-                : "The selected model is disabled or unavailable. Choose a replacement; your draft is preserved."
-            }
-          />
-        )}
-        {approvalMode === "arbiter" && effectiveApprovalMode === "ask" && (
-          <Alert
-            theme="info"
-            message={
-              locale === "ru"
-                ? "Арбитр отключён администратором. Действия будут запрашивать ваше подтверждение."
-                : "The administrator disabled the reviewer. Actions will require your approval."
-            }
-          />
-        )}
-        {approvalUnavailable && permissionOptions.isError && (
-          <Alert
-            theme="warning"
-            message={
-              locale === "ru"
-                ? "Не удалось проверить доступность арбитра."
-                : "Could not verify reviewer availability."
-            }
-            actions={
-              <Button onClick={() => void permissionOptions.refetch()}>
-                {locale === "ru" ? "Повторить" : "Retry"}
-              </Button>
-            }
-          />
-        )}
-        {reconnecting && <Alert theme="info" message={t("reconnecting")} />}
-        {!loading &&
-          !modelsQuery.isPending &&
-          !modelsQuery.isError &&
-          !models.length && (
-            <Alert
-              theme="info"
-              message={
-                <>
-                  {t("noModels")}{" "}
-                  {onConfigure && (
-                    <Button onClick={onConfigure}>{t("configure")}</Button>
-                  )}
-                </>
-              }
-            />
-          )}
-        {lastRun?.error_code && !lastRun.dismissed && (
-          <Alert
-            theme={lastRun.status === "failed" ? "danger" : "warning"}
-            message={t(lastRun.error_code)}
-            onClose={() =>
-              void action(async () => {
-                await api.request(
-                  "/runs/" + lastRun.id + "/dismiss-error",
-                  "POST",
-                );
-                if (id) await load(id);
-              })
-            }
-          />
-        )}
-        {lastRun &&
-          !lastRun.dismissed &&
-          ["failed", "cancelled"].includes(lastRun.status) && (
-            <Flex gap="spacing-2" alignItems="center" wrap="wrap">
-              {lastRun.status === "cancelled" && (
-                <Text color="secondary">{t("RUN_CANCELLED")}</Text>
-              )}
-              <Button
-                disabled={readOnly || busy || Boolean(active) || !selected}
-                onClick={() => void send("", lastRun.user_message_id)}
-              >
-                {t("retry")}
-              </Button>
-            </Flex>
-          )}
-        {source && id && (
-          <SourceEvidence
-            key={source.message + source.ordinal}
-            api={api}
-            conversation={id}
-            locale={locale}
-            source={source}
-            onClose={closeSource}
-          />
-        )}
-        <Box
-          flex="1"
-          minHeight="0"
-          className="conversation-history"
-          paddingInline={{ xs: "spacing-3", m: "spacing-6" }}
+        <div
+          className="chat-workspace"
+          inert={(panelOpen || infoOpen) && compactWorkspace}
         >
-          {loading ? (
-            <LoadingPanel label={t("loading")} />
-          ) : !messages.length ? (
-            <Flex
-              direction="column"
-              alignItems="center"
-              justifyContent="center"
-              height="100%"
-              padding="spacing-6"
-              gap="spacing-3"
-            >
-              <Text as="h1" variant="display-1">
-                {locale === "ru" ? "С чего начнём?" : "What shall we work on?"}
-              </Text>
-              <Text color="secondary">
-                {scopeProject
-                  ? projects.find((p) => p.id === scopeProject)?.name
-                  : t("emptyHint")}
-              </Text>
-            </Flex>
+          {headerHost ? (
+            <Portal container={headerHost}>{toolbar}</Portal>
           ) : (
-            <ConversationHistory conversationId={id} locale={locale}>
-              <TranscriptProvider
-                api={api}
-                runs={snapshot?.runs ?? []}
-                locale={locale}
-              >
-                <MessageList<ActionPart>
-                  mdxProps={{
-                    getMarkdownExtraProps: (message) => ({
-                      "data-citation-message": message.id,
-                      onClickCapture: (event) => {
-                        const link =
-                          event.target instanceof Element
-                            ? event.target.closest("a")
-                            : null;
-                        const match = /^#source-(\d+)$/.exec(
-                          link?.getAttribute("href") ?? "",
-                        );
-                        if (!match) return;
-                        event.preventDefault();
-                        event.stopPropagation();
-                        const hit = map
-                          .get(message.id ?? "")
-                          ?.sources?.find(
-                            (item) => item.ordinal === Number(match[1]),
-                          );
-                        if (
-                          hit?.name &&
-                          message.id &&
-                          link instanceof HTMLElement
-                        )
-                          openSource(
-                            {
-                              message: message.id,
-                              ordinal: hit.ordinal,
-                              name: hit.name,
-                            },
-                            link,
-                          );
-                      },
-                    }),
-                  }}
-                  scrollMode="external"
-                  thinkingMessageView="grouped"
-                  messageRendererRegistry={transcriptRegistry}
-                  messages={messages}
-                  renderAssistantFooter={(message) => {
-                    const run = snapshot?.runs.find(
-                      (r) => r.assistant_message_id === message.id,
-                    );
-                    const sources = map.get(message.id ?? "")?.sources ?? [];
-                    return (
-                      <>
-                        {sources.length > 0 && (
-                          <Flex wrap="wrap" gap="spacing-1" alignItems="center">
-                            <Text color="secondary">
-                              {locale === "ru" ? "Источники" : "Sources"}
-                            </Text>
-                            {sources.map((hit) => (
-                              <Button
-                                key={hit.ordinal}
-                                id={"source-" + message.id + "-" + hit.ordinal}
-                                view="flat"
-                                size="s"
-                                disabled={!hit.name}
-                                onClick={(event) => {
-                                  if (hit.name && message.id)
-                                    openSource(
-                                      {
-                                        message: message.id,
-                                        ordinal: hit.ordinal,
-                                        name: hit.name,
-                                      },
-                                      event.currentTarget,
-                                    );
-                                }}
-                              >
-                                [{hit.ordinal}]{" "}
-                                {hit.name ??
-                                  (locale === "ru"
-                                    ? "Недоступен"
-                                    : "Unavailable")}
-                              </Button>
-                            ))}
-                          </Flex>
-                        )}
-                        {run ? (
-                          <RunActivity
-                            api={api}
-                            run={run}
-                            locale={locale}
-                            ordered={Boolean(
-                              snapshot?.messages.find(
-                                (m) => m.id === message.id,
-                              )?.parts,
-                            )}
-                            reasoning={
-                              snapshot?.messages.find(
-                                (m) => m.id === message.id,
-                              )?.reasoning
-                            }
-                          />
-                        ) : snapshot?.messages.find((m) => m.id === message.id)
-                            ?.reasoning ? (
-                          <Disclosure
-                            summary={
-                              locale === "ru" ? "Рассуждения" : "Reasoning"
-                            }
-                          >
-                            <pre className="reasoning-text">
-                              {
-                                snapshot.messages.find(
-                                  (m) => m.id === message.id,
-                                )?.reasoning
-                              }
-                            </pre>
-                          </Disclosure>
-                        ) : null}
-                      </>
-                    );
-                  }}
-                  status={
-                    active
-                      ? active.status === "queued"
-                        ? "submitted"
-                        : "streaming"
-                      : "ready"
-                  }
-                  transformOptions={{ html: false }}
-                  openMarkdownLinksInNewTab
-                  showTimestamp={false}
-                  showActionsOnHover={!keyboardMode}
-                  showAvatar={false}
-                  className="conversation-messages"
-                />
-              </TranscriptProvider>
-            </ConversationHistory>
+            toolbar
           )}
-        </Box>
-        <Box
-          className="conversation-composer"
-          paddingInline={{ xs: "spacing-3", m: "spacing-6" }}
-          paddingBlockEnd="spacing-3"
-          width="100%"
-          maxWidth="54rem"
-          marginInline="auto"
-        >
-          <Card view="outlined" padding="spacing-3">
-            <Flex direction="column" gap="spacing-3">
-              {codeEnabled && (
-                <Flex>
-                  <Menu
-                    trigger={
-                      <Button
-                        view="flat"
-                        disabled={busy || Boolean(active) || readOnly}
-                        aria-label={
-                          (locale === "ru" ? "Работать в: " : "Work in: ") +
-                          targetLabel
-                        }
-                      >
-                        {(locale === "ru" ? "Работать в: " : "Work in: ") +
-                          targetLabel}
-                        <Icon data={ChevronDown} />
-                      </Button>
-                    }
-                  >
-                    <Menu.Item
-                      selected={!localTarget}
-                      disabled={
-                        Boolean(snapshot?.runs.length) || Boolean(active)
-                      }
-                      onClick={() => void chooseTarget(false)}
-                    >
-                      {locale === "ru" ? "Сервер Runóza" : "Runóza server"}
-                    </Menu.Item>
-                    {window.runozaDesktop && (
-                      <Menu.Item
-                        selected={localTarget}
-                        disabled={
-                          Boolean(snapshot?.runs.length) || Boolean(active)
-                        }
-                        onClick={() => void chooseTarget(true)}
-                      >
-                        {locale === "ru"
-                          ? "Локально · выбрать папку…"
-                          : "Local · choose folder…"}
-                      </Menu.Item>
-                    )}
-                    {localTarget && !window.runozaDesktop && (
-                      <Menu.Item selected disabled>
-                        {targetLabel}
-                      </Menu.Item>
-                    )}
-                    {Boolean(snapshot?.runs.length) && (
-                      <Menu.Item disabled>
-                        {locale === "ru"
-                          ? "Для другого места создайте новую беседу"
-                          : "Start a new conversation to change location"}
-                      </Menu.Item>
-                    )}
-                    <Menu.Divider />
-                    <Menu.Item onClick={() => void openWorkspace()}>
-                      {locale === "ru"
-                        ? "Открыть рабочую область"
-                        : "Open workspace"}
-                    </Menu.Item>
-                  </Menu>
-                </Flex>
-              )}
-              {searchProject && scopeProject && (
-                <Flex alignItems="center" gap="spacing-2" wrap="wrap">
-                  <Button
-                    size="s"
-                    view="outlined"
-                    onClick={() => setSearchProject(false)}
-                    aria-label={
-                      locale === "ru"
-                        ? "Убрать поиск по проекту"
-                        : "Remove project search"
-                    }
-                  >
-                    {locale === "ru" ? "Поиск" : "Search"} ·{" "}
-                    {projects.find((p) => p.id === scopeProject)?.name ??
-                      (locale === "ru" ? "Проект" : "Project")}{" "}
-                    <Icon data={Xmark} />
-                  </Button>
-                  {Boolean(collectionQuery.data?.length || collectionId) && (
-                    <Select
-                      size="s"
-                      aria-label={
-                        locale === "ru" ? "Область поиска" : "Search scope"
-                      }
-                      value={[collectionId || "all"]}
-                      onUpdate={(v) =>
-                        setCollection(v[0] === "all" ? "" : (v[0] ?? ""))
-                      }
-                      options={[
-                        {
-                          value: "all",
-                          content:
-                            locale === "ru"
-                              ? "Все файлы проекта"
-                              : "All project files",
-                        },
-                        ...(collectionQuery.data ?? []).map((c) => ({
-                          value: c.id,
-                          content: c.name,
-                        })),
-                      ]}
-                    />
-                  )}
-                  {attachmentQuery.data &&
-                    attachmentQuery.data.length < 200 &&
-                    !attachmentQuery.data.some((f) => f.searchable) && (
-                      <Text color="secondary">
-                        {locale === "ru"
-                          ? "Для поиска включите файл через меню «Проект → Файлы»."
-                          : "Make a file searchable in Project → Files first."}
-                      </Text>
-                    )}
-                </Flex>
-              )}
-              {fileIds.length > 0 && (
-                <Flex
-                  gap="spacing-2"
-                  wrap="wrap"
-                  className="composer-attachments"
-                >
-                  {fileIds.map((fileId) => {
-                    const f = attachmentQuery.data?.find(
-                      (f) => f.id === fileId,
-                    );
-                    return (
-                      <FilePreview
-                        key={fileId}
-                        file={
-                          new File(
-                            [],
-                            f?.name ??
-                              (locale === "ru" ? "Вложение" : "Attachment"),
-                            { type: f?.mediaType },
-                          )
-                        }
-                        description={
-                          f
-                            ? new Intl.NumberFormat(locale).format(f.size) +
-                              " B"
-                            : undefined
-                        }
-                        actions={[
-                          {
-                            id: "remove",
-                            icon: <Icon data={Xmark} />,
-                            title:
-                              locale === "ru"
-                                ? "Убрать вложение"
-                                : "Remove attachment",
-                            disabled: busy || Boolean(active),
-                            onClick: () =>
-                              setFileIds((ids) =>
-                                ids.filter((id) => id !== fileId),
-                              ),
-                          },
-                        ]}
-                      />
-                    );
-                  })}
-                </Flex>
-              )}
-              {active?.compaction_state &&
-                ["pending", "running"].includes(active.compaction_state) && (
-                  <Alert
-                    theme="info"
-                    message={
-                      locale === "ru"
-                        ? active.compaction_state === "pending"
-                          ? "Сжатие запланировано после текущего шага."
-                          : "Сжимаю контекст. История и результаты инструментов сохраняются."
-                        : active.compaction_state === "pending"
-                          ? "Compaction queued after the current step."
-                          : "Compacting context. History and tool results are preserved."
-                    }
-                  />
-                )}
-              <SkillCommandList commands={commands} locale={locale} />
-              {skillVersionIds.length > 0 && (
-                <Flex gap="spacing-1" wrap="wrap">
-                  {skillVersionIds.map((id) => (
-                    <Button
-                      key={id}
-                      view="outlined"
-                      size="s"
-                      onClick={() =>
-                        setSkillVersionIds((ids) => ids.filter((x) => x !== id))
-                      }
-                    >
-                      {commands.catalog.data?.extensions.find(
-                        (x) => x.versionId === id,
-                      )?.name ?? (locale === "ru" ? "Скилл" : "Skill")}{" "}
-                      <Icon data={Xmark} size={12} />
-                    </Button>
-                  ))}
-                </Flex>
-              )}
-              <TextArea
-                value={prompt}
-                onUpdate={setPrompt}
-                placeholder={t("prompt")}
-                minRows={2}
-                maxRows={8}
-                view="clear"
-                disabled={readOnly || busy || !selected}
-                controlProps={{
-                  ...commands.inputProps,
-                  "aria-label": t("prompt"),
-                  maxLength: 32000,
-                }}
-                onKeyDown={(e) => {
-                  if (commands.onKeyDown(e)) return;
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    if (prompt.trim() && (!active || isCompactionPrompt))
-                      void send(prompt).then((ok) => {
-                        if (ok !== false) setPrompt("");
-                      });
-                  }
-                }}
-              />
-              <Flex
-                gap="spacing-2"
-                alignItems="flex-end"
-                justifyContent="space-between"
-                minWidth="0"
-              >
-                <Flex
-                  gap="spacing-2"
-                  alignItems="center"
-                  minWidth="0"
-                  wrap="wrap"
-                >
-                  <ComposerAddMenu
-                    locale={locale}
-                    onSearchProject={
-                      scopeProject &&
-                      capabilities.flags.projectSearch !== false &&
-                      !searchProject
-                        ? () => {
-                            setCollection("");
-                            setSearchProject(true);
-                          }
-                        : undefined
-                    }
-                    attachmentCount={fileIds.length}
-                    disabled={readOnly || busy || Boolean(active)}
-                    onChoose={(item) => {
-                      if (item === "attachments") {
-                        setAttachmentDraft(fileIds);
-                        setShowFiles(true);
-                      } else setExtensionKind(item);
-                    }}
-                  />
-                  <Select
-                    aria-label={t("model")}
-                    value={selected ? [selected] : []}
-                    filterable
-                    filterPlaceholder={
-                      locale === "ru" ? "Найти модель…" : "Find a model…"
-                    }
-                    popupWidth={320}
-                    popupClassName="model-picker-popup"
-                    options={[...new Set(models.map((m) => m.group || "Other"))]
-                      .sort()
-                      .map((group) => ({
-                        label:
-                          group === "Other" && locale === "ru"
-                            ? "Другие"
-                            : group,
-                        options: models
-                          .filter(
-                            (m) =>
-                              (m.group || "Other") === group &&
-                              (!providerFilter ||
-                                m.providerId === providerFilter),
-                          )
-                          .map((m) => ({
-                            value: JSON.stringify([m.providerId, m.id]),
-                            content: m.name || m.id,
-                            data: m,
-                          })),
-                      }))
-                      .filter((g) => g.options.length)}
-                    renderPopup={({ renderFilter, renderList }) => (
-                      <Flex direction="column" className="model-picker-content">
-                        <Flex
-                          className="model-provider-filters"
-                          padding="spacing-2"
-                          gap="spacing-1"
-                        >
-                          <Button
-                            size="s"
-                            view={providerFilter ? "flat" : "outlined"}
-                            onClick={() => setProviderFilter("")}
-                          >
-                            {locale === "ru" ? "Все" : "All"}
-                          </Button>
-                          {[
-                            ...new Map(
-                              models.map((m) => [m.providerId, m] as const),
-                            ).entries(),
-                          ].map(([provider, model]) => (
-                            <Button
-                              key={provider}
-                              size="s"
-                              view={
-                                providerFilter === provider
-                                  ? "outlined"
-                                  : "flat"
-                              }
-                              onClick={() => setProviderFilter(provider)}
-                            >
-                              {model.providerName}
-                            </Button>
-                          ))}
-                        </Flex>
-                        {renderFilter()}
-                        {renderList()}
-                      </Flex>
-                    )}
-                    onUpdate={(v) => {
-                      setSelected(v[0] ?? "");
-                      setReasoning("default");
-                      if (v[0]) {
-                        const [providerId, model] = JSON.parse(v[0]);
-                        persistChoice({
-                          providerId,
-                          model,
-                          reasoning: "default",
-                        });
-                      }
-                    }}
-                    filterOption={(option, filter) => {
-                      const model = option.data;
-                      return [
-                        option.content,
-                        model?.id,
-                        model?.providerName,
-                        ...modelSummary(model?.reference, locale),
-                      ]
-                        .join(" ")
-                        .toLocaleLowerCase(locale)
-                        .includes(filter.trim().toLocaleLowerCase(locale));
-                    }}
-                    getOptionHeight={() => 52}
-                    renderOption={(option) => (
-                      <Flex alignItems="center" gap="spacing-2" minWidth="0">
-                        <ModelLogo
-                          brand={option.data?.reference?.modelBrand}
-                          fallback={option.data?.providerBrand}
-                        />
-                        <Flex direction="column" minWidth="0">
-                          <Text ellipsis>{option.content}</Text>
-                          <Text ellipsis variant="caption-2" color="secondary">
-                            {[
-                              option.data?.providerName,
-                              ...modelSummary(option.data?.reference, locale),
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </Text>
-                        </Flex>
-                      </Flex>
-                    )}
-                    renderControl={({ triggerProps, ref }) => (
-                      <Button
-                        {...triggerProps}
-                        ref={ref as Ref<HTMLButtonElement>}
-                        view="flat"
-                        className="model-trigger"
-                      >
-                        <span className="model-trigger-label">
-                          {selectedModel?.name ||
-                            selectedModel?.id ||
-                            t("model")}
-                        </span>
-                        <Icon data={ChevronDown} size={12} />
-                      </Button>
-                    )}
-                  />
-                  <ReasoningControl
-                    profile={selectedModel?.reasoning}
-                    value={reasoning}
-                    onChange={(value) => {
-                      setReasoning(value);
-                      persistChoice({ reasoning: value });
-                    }}
-                    locale={locale}
-                    disabled={busy || Boolean(active) || readOnly}
-                  />
-                  {(codeEnabled || capabilities.flags.mcp === true) && (
-                    <Select
-                      aria-label={
-                        locale === "ru"
-                          ? "Подтверждение действий"
-                          : "Action approval"
-                      }
-                      value={[active?.approval_mode ?? effectiveApprovalMode]}
-                      disabled={
-                        busy ||
-                        Boolean(active) ||
-                        readOnly ||
-                        Boolean(id && snapshot?.conversation.id !== id)
-                      }
-                      options={[
-                        {
-                          value: "ask",
-                          content: locale === "ru" ? "Спрашивать" : "Ask me",
-                        },
-                        ...(permissionOptions.data?.arbiterEnabled
-                          ? [
-                              {
-                                value: "arbiter",
-                                content:
-                                  locale === "ru"
-                                    ? "Подтверждать за меня"
-                                    : "Approve for me",
-                              },
-                            ]
-                          : []),
-                        { value: "full", content: fullAccessLabel },
-                      ]}
-                      onUpdate={(v) => {
-                        if (v[0] === "full") {
-                          if (approvalMode !== "full")
-                            setConfirmFullAccess(true);
-                          return;
-                        }
-                        const value = v[0] === "arbiter" ? "arbiter" : "ask";
-                        chooseApproval(value);
-                      }}
-                      renderOption={(option) =>
-                        option.value === "full" ? (
-                          <Text color="danger">{option.content}</Text>
-                        ) : (
-                          <Text>{option.content}</Text>
-                        )
-                      }
-                      renderSelectedOptions={(options) =>
-                        options[0]?.value === "full" ? (
-                          <Text color="danger">{fullAccessLabel}</Text>
-                        ) : (
-                          options[0]?.content
-                        )
-                      }
-                    />
-                  )}
-                </Flex>
-                <Tooltip content={active ? t("stop") : t("send")}>
-                  <Button
-                    view="action"
-                    size="l"
-                    aria-label={
-                      active && !isCompactionPrompt ? t("stop") : t("send")
-                    }
-                    disabled={
-                      readOnly ||
-                      busy ||
-                      (!active &&
-                        (!modelAvailable ||
-                          approvalUnavailable ||
-                          !prompt.trim()))
-                    }
-                    onClick={() => {
-                      if (active && !isCompactionPrompt)
-                        void action(async () => {
-                          await api.request(
-                            "/runs/" + active.id + "/cancel",
-                            "POST",
-                          );
-                          if (id) await load(id);
-                        });
-                      else
-                        void send(prompt).then((ok) => {
-                          if (ok !== false) setPrompt("");
-                        });
-                    }}
-                  >
-                    <Icon
-                      data={
-                        active && !isCompactionPrompt ? CircleStop : ArrowUp
-                      }
-                    />
-                  </Button>
-                </Tooltip>
-              </Flex>
-            </Flex>
-          </Card>
-          <Flex justifyContent="center" paddingBlockStart="spacing-2">
-            <Text variant="caption-2" color="secondary">
-              {t("disclaimer")}
-            </Text>
-            {lastRun?.usage && lastRun.usage.reported !== false && (
-              <Tooltip content={t("tokens") + ": " + lastRun.usage.totalTokens}>
-                <Text variant="caption-2" color="secondary">
-                  {" "}
-                  · {lastRun.usage.totalTokens}
-                </Text>
-              </Tooltip>
-            )}
-          </Flex>
-        </Box>
-        <ExtensionPicker
-          api={api}
-          locale={locale}
-          projectId={scopeProject}
-          conversationId={id ?? initialChat}
-          workspace={codeEnabled}
-          selection={{
-            kind: extensionKind,
-            onClose: () => setExtensionKind(null),
-          }}
-        />
-        <Dialog
-          open={confirmFullAccess}
-          onOpenChange={setConfirmFullAccess}
-          maxWidth="s"
-        >
-          <Dialog.Header caption={fullAccessLabel} />
-          <Dialog.Body>
+          {capabilities.error && (
             <Alert
               theme="warning"
               message={
                 locale === "ru"
-                  ? "Режим сохранится для этой беседы, пока вы его не переключите. Агент сможет выполнять команды и вызывать доступные инструменты без подтверждения. В локальной рабочей области команды выполняются на вашем компьютере."
-                  : "This mode stays on for this conversation until you change it. The agent can execute commands and invoke available tools without confirmation. In a local workspace, commands run on your computer."
+                  ? "Не удалось обновить доступность функций. Новые действия проверяются сервером."
+                  : "Could not refresh feature availability. New actions are checked by the server."
               }
             />
-          </Dialog.Body>
-          <Dialog.Footer
-            textButtonCancel={locale === "ru" ? "Отмена" : "Cancel"}
-            textButtonApply={
-              locale === "ru"
-                ? "Включить для беседы"
-                : "Enable for this conversation"
-            }
-            propsButtonApply={{ disabled: busy }}
-            onClickButtonCancel={() => setConfirmFullAccess(false)}
-            onClickButtonApply={() => chooseApproval("full")}
-          />
-        </Dialog>
-        <Dialog open={showFiles} maxWidth="l" onOpenChange={setShowFiles}>
-          <Dialog.Header caption={rt("attachments")} />
-          <Dialog.Body>
-            {(!id || snapshot) && (
-              <FilesPanel
-                key={scopeProject + ":" + (id ?? "new")}
+          )}
+          {codeEnabled && !executionEnabled && (
+            <Alert
+              theme="info"
+              message={
+                locale === "ru"
+                  ? "Серверная среда выполнения не настроена. Чат и HTTP MCP доступны; для локальных команд выберите папку в десктопном клиенте."
+                  : "No server execution environment is configured. Chat and HTTP MCP remain available; choose a folder in the desktop client for local commands."
+              }
+            />
+          )}
+          {readOnly && <Alert theme="info" message={rt("readOnly")} />}
+          {error && (
+            <Alert
+              theme="danger"
+              onClose={() => setError("")}
+              message={
+                [
+                  "FILE_UNAVAILABLE",
+                  "FILE_NOT_READABLE",
+                  "ATTACHMENT_LIMIT",
+                ].includes(error)
+                  ? rt(error)
+                  : ["CONTEXT_LIMIT", "EXTENSION_CONTEXT_LIMIT"].includes(
+                        error,
+                      ) && contextError
+                    ? contextError
+                    : t(error)
+              }
+            />
+          )}
+          {defaultsQuery.isError && !initialChat && (
+            <Alert
+              theme="warning"
+              message={
+                locale === "ru"
+                  ? "Не удалось загрузить модель по умолчанию. Повторите загрузку или выберите модель вручную."
+                  : "Could not load your default model. Retry or choose a model manually."
+              }
+              actions={
+                <Button onClick={() => void defaultsQuery.refetch()}>
+                  {locale === "ru" ? "Повторить" : "Retry"}
+                </Button>
+              }
+            />
+          )}
+          {modelsQuery.isError && (
+            <Alert
+              theme="warning"
+              message={
+                locale === "ru"
+                  ? "Не удалось обновить каталог моделей."
+                  : "Could not refresh the model catalog."
+              }
+              actions={
+                <Button onClick={() => void modelsQuery.refetch()}>
+                  {locale === "ru" ? "Повторить" : "Retry"}
+                </Button>
+              }
+            />
+          )}
+          {!modelsQuery.isPending && selected && !modelAvailable && (
+            <Alert
+              theme="warning"
+              message={
+                locale === "ru"
+                  ? "Выбранная модель отключена или недоступна. Выберите замену в меню модели; ваш текст сохранён."
+                  : "The selected model is disabled or unavailable. Choose a replacement; your draft is preserved."
+              }
+            />
+          )}
+          {approvalMode === "arbiter" && effectiveApprovalMode === "ask" && (
+            <Alert
+              theme="info"
+              message={
+                locale === "ru"
+                  ? "Арбитр отключён администратором. Действия будут запрашивать ваше подтверждение."
+                  : "The administrator disabled the reviewer. Actions will require your approval."
+              }
+            />
+          )}
+          {approvalUnavailable && permissionOptions.isError && (
+            <Alert
+              theme="warning"
+              message={
+                locale === "ru"
+                  ? "Не удалось проверить доступность арбитра."
+                  : "Could not verify reviewer availability."
+              }
+              actions={
+                <Button onClick={() => void permissionOptions.refetch()}>
+                  {locale === "ru" ? "Повторить" : "Retry"}
+                </Button>
+              }
+            />
+          )}
+          {reconnecting && <Alert theme="info" message={t("reconnecting")} />}
+          {!loading &&
+            !modelsQuery.isPending &&
+            !modelsQuery.isError &&
+            !models.length && (
+              <Alert
+                theme="info"
+                message={
+                  <>
+                    {t("noModels")}{" "}
+                    {onConfigure && (
+                      <Button onClick={onConfigure}>{t("configure")}</Button>
+                    )}
+                  </>
+                }
+              />
+            )}
+          {lastRun?.error_code && !lastRun.dismissed && (
+            <Alert
+              theme={lastRun.status === "failed" ? "danger" : "warning"}
+              message={t(lastRun.error_code)}
+              onClose={() =>
+                void action(async () => {
+                  await api.request(
+                    "/runs/" + lastRun.id + "/dismiss-error",
+                    "POST",
+                  );
+                  if (id) await load(id);
+                })
+              }
+            />
+          )}
+          {lastRun &&
+            !lastRun.dismissed &&
+            ["failed", "cancelled"].includes(lastRun.status) && (
+              <Flex gap="spacing-2" alignItems="center" wrap="wrap">
+                {lastRun.status === "cancelled" && (
+                  <Text color="secondary">{t("RUN_CANCELLED")}</Text>
+                )}
+                <Button
+                  disabled={readOnly || busy || Boolean(active) || !selected}
+                  onClick={() => void send("", lastRun.user_message_id)}
+                >
+                  {t("retry")}
+                </Button>
+              </Flex>
+            )}
+          {source && id && (
+            <SourceEvidence
+              key={source.message + source.ordinal}
+              api={api}
+              conversation={id}
+              locale={locale}
+              source={source}
+              onClose={closeSource}
+            />
+          )}
+          <Box
+            flex="1"
+            minHeight="0"
+            className="conversation-history"
+            paddingInline={{ xs: "spacing-3", m: "spacing-6" }}
+          >
+            {loading ? (
+              <LoadingPanel label={t("loading")} />
+            ) : !snapshot?.conversation.head_id ? (
+              <Flex
+                direction="column"
+                alignItems="center"
+                justifyContent="center"
+                height="100%"
+                padding="spacing-6"
+                gap="spacing-3"
+              >
+                <Text as="h1" variant="display-1">
+                  {locale === "ru"
+                    ? "С чего начнём?"
+                    : "What shall we work on?"}
+                </Text>
+                <Text color="secondary">
+                  {scopeProject
+                    ? projects.find((p) => p.id === scopeProject)?.name
+                    : t("emptyHint")}
+                </Text>
+              </Flex>
+            ) : (
+              <ChatHistory
+                api={api}
+                snapshot={snapshot!}
+                locale={locale}
+                readOnly={readOnly}
+                busy={busy}
+                canRetry={Boolean(selected)}
+                keyboardMode={keyboardMode}
+                targetLabel={targetLabel}
+                onFork={historyFork}
+                onVersion={historyVersion}
+                onEdit={historyEdit}
+                onRetry={historyRetry}
+                onSource={historySource}
+                onError={historyError}
+              />
+            )}
+          </Box>
+          <Box
+            className="conversation-composer"
+            paddingInline={{ xs: "spacing-3", m: "spacing-6" }}
+            paddingBlockEnd="spacing-3"
+            width="100%"
+            maxWidth="54rem"
+            marginInline="auto"
+          >
+            {(active ?? lastRun) && (
+              <RunStatusStrip
+                key={"status-" + (active ?? lastRun)!.id}
+                run={(active ?? lastRun)!}
                 api={api}
                 locale={locale}
-                onExpired={onExpired}
-                projectId={scopeProject}
-                readOnly={readOnly || Boolean(active)}
-                selected={attachmentDraft}
-                onSelect={setAttachmentDraft}
+                targetLabel={targetLabel}
               />
             )}
-          </Dialog.Body>
-          <Dialog.Footer
-            textButtonCancel={rt("cancel")}
-            textButtonApply={
-              u("choose") +
-              (attachmentDraft.length ? ` (${attachmentDraft.length})` : "")
-            }
-            onClickButtonCancel={() => setShowFiles(false)}
-            onClickButtonApply={() => {
-              setFileIds(attachmentDraft);
-              setShowFiles(false);
+            {(active ?? lastRun)?.mode === "code" && (
+              <RunPlanPanel
+                key={"plan-" + (active ?? lastRun)!.id}
+                api={api}
+                run={(active ?? lastRun)!}
+                locale={locale}
+                editable={!readOnly}
+                disabled={
+                  busy ||
+                  Boolean(active) ||
+                  !modelAvailable ||
+                  approvalUnavailable
+                }
+                onExecute={
+                  snapshot?.conversation.head_id ===
+                    (active ?? lastRun)?.assistant_message_id && !readOnly
+                    ? (plan) =>
+                        send(
+                          locale === "ru"
+                            ? "Приступить к выполнению плана"
+                            : "Start implementation",
+                          undefined,
+                          undefined,
+                          {
+                            preserveDraft: true,
+                            planAcceptance: {
+                              runId: plan.runId,
+                              version: plan.version,
+                            },
+                          },
+                        )
+                    : undefined
+                }
+              />
+            )}
+            <ContextMeter
+              key={(active ?? lastRun)?.id ?? "empty"}
+              run={active ?? lastRun}
+              locale={locale}
+              sameModel={Boolean(
+                (active ?? lastRun) &&
+                  selectedModel?.id === (active ?? lastRun)?.model &&
+                  selectedModel?.providerId ===
+                    (active ?? lastRun)?.provider_id,
+              )}
+              disabled={readOnly || busy || !modelAvailable}
+              onCompact={
+                id
+                  ? () => {
+                      void send("/compaction", undefined, undefined, {
+                        preserveDraft: true,
+                      });
+                    }
+                  : undefined
+              }
+            />
+            {id && (
+              <ConversationQueuePanel
+                key={id}
+                api={api}
+                id={id}
+                locale={locale}
+                readOnly={readOnly}
+                queue={queue}
+                submission={queueSubmission}
+                selection={modelAvailable ? queueSelection : undefined}
+              />
+            )}
+            <Card view="outlined" padding="spacing-3">
+              <Flex direction="column" gap="spacing-3">
+                {executionEnabled && (
+                  <Checkbox
+                    checked={planning}
+                    onUpdate={setPlanning}
+                    disabled={busy || readOnly}
+                    content={
+                      locale === "ru"
+                        ? "Сначала составить план"
+                        : "Plan before implementing"
+                    }
+                  />
+                )}
+                {codeEnabled && (
+                  <Flex>
+                    <Menu
+                      trigger={
+                        <Button
+                          view="flat"
+                          disabled={busy || Boolean(active) || readOnly}
+                          aria-label={
+                            (locale === "ru" ? "Работать в: " : "Work in: ") +
+                            targetLabel
+                          }
+                        >
+                          <span
+                            className="agent-target-label"
+                            title={targetLabel}
+                          >
+                            {(locale === "ru" ? "Работать в: " : "Work in: ") +
+                              targetLabel}
+                          </span>
+                          <Icon data={ChevronDown} />
+                        </Button>
+                      }
+                    >
+                      <Menu.Item
+                        selected={!localTarget}
+                        disabled={
+                          Boolean(snapshot?.runs.length) || Boolean(active)
+                        }
+                        onClick={() => void chooseTarget(false)}
+                      >
+                        {locale === "ru" ? "Сервер Runóza" : "Runóza server"}
+                      </Menu.Item>
+                      {window.runozaDesktop && (
+                        <Menu.Item
+                          selected={localTarget}
+                          disabled={
+                            Boolean(snapshot?.runs.length) || Boolean(active)
+                          }
+                          onClick={() => void chooseTarget(true)}
+                        >
+                          {locale === "ru"
+                            ? "Локально · выбрать папку…"
+                            : "Local · choose folder…"}
+                        </Menu.Item>
+                      )}
+                      {localTarget && !window.runozaDesktop && (
+                        <Menu.Item selected disabled>
+                          {targetLabel}
+                        </Menu.Item>
+                      )}
+                      {Boolean(snapshot?.runs.length) && (
+                        <Menu.Item disabled>
+                          {locale === "ru"
+                            ? "Для другого места создайте новую беседу"
+                            : "Start a new conversation to change location"}
+                        </Menu.Item>
+                      )}
+                      <Menu.Divider />
+                      <Menu.Item onClick={() => void openWorkspace()}>
+                        {locale === "ru"
+                          ? "Открыть рабочую область"
+                          : "Open workspace"}
+                      </Menu.Item>
+                    </Menu>
+                  </Flex>
+                )}
+                {searchProject && scopeProject && (
+                  <Flex alignItems="center" gap="spacing-2" wrap="wrap">
+                    <Button
+                      size="s"
+                      view="outlined"
+                      onClick={() => setSearchProject(false)}
+                      aria-label={
+                        locale === "ru"
+                          ? "Убрать поиск по проекту"
+                          : "Remove project search"
+                      }
+                    >
+                      {locale === "ru" ? "Поиск" : "Search"} ·{" "}
+                      {projects.find((p) => p.id === scopeProject)?.name ??
+                        (locale === "ru" ? "Проект" : "Project")}{" "}
+                      <Icon data={Xmark} />
+                    </Button>
+                    {Boolean(collectionQuery.data?.length || collectionId) && (
+                      <Select
+                        size="s"
+                        aria-label={
+                          locale === "ru" ? "Область поиска" : "Search scope"
+                        }
+                        value={[collectionId || "all"]}
+                        onUpdate={(v) =>
+                          setCollection(v[0] === "all" ? "" : (v[0] ?? ""))
+                        }
+                        options={[
+                          {
+                            value: "all",
+                            content:
+                              locale === "ru"
+                                ? "Все файлы проекта"
+                                : "All project files",
+                          },
+                          ...(collectionQuery.data ?? []).map((c) => ({
+                            value: c.id,
+                            content: c.name,
+                          })),
+                        ]}
+                      />
+                    )}
+                    {attachmentQuery.data &&
+                      attachmentQuery.data.length < 200 &&
+                      !attachmentQuery.data.some((f) => f.searchable) && (
+                        <Text color="secondary">
+                          {locale === "ru"
+                            ? "Для поиска включите файл через меню «Проект → Файлы»."
+                            : "Make a file searchable in Project → Files first."}
+                        </Text>
+                      )}
+                  </Flex>
+                )}
+                {fileIds.length > 0 && (
+                  <Flex
+                    gap="spacing-2"
+                    wrap="wrap"
+                    className="composer-attachments"
+                  >
+                    {fileIds.map((fileId) => {
+                      const f = attachmentQuery.data?.find(
+                        (f) => f.id === fileId,
+                      );
+                      return (
+                        <FilePreview
+                          key={fileId}
+                          file={
+                            new File(
+                              [],
+                              f?.name ??
+                                (locale === "ru" ? "Вложение" : "Attachment"),
+                              { type: f?.mediaType },
+                            )
+                          }
+                          description={
+                            f
+                              ? new Intl.NumberFormat(locale).format(f.size) +
+                                " B"
+                              : undefined
+                          }
+                          actions={[
+                            {
+                              id: "remove",
+                              icon: <Icon data={Xmark} />,
+                              title:
+                                locale === "ru"
+                                  ? "Убрать вложение"
+                                  : "Remove attachment",
+                              disabled: busy || Boolean(active),
+                              onClick: () =>
+                                setFileIds((ids) =>
+                                  ids.filter((id) => id !== fileId),
+                                ),
+                            },
+                          ]}
+                        />
+                      );
+                    })}
+                  </Flex>
+                )}
+                {active?.compaction_state &&
+                  ["pending", "running"].includes(active.compaction_state) && (
+                    <Alert
+                      theme="info"
+                      message={
+                        locale === "ru"
+                          ? active.compaction_state === "pending"
+                            ? "Сжатие запланировано после текущего шага."
+                            : "Сжимаю контекст. История и результаты инструментов сохраняются."
+                          : active.compaction_state === "pending"
+                            ? "Compaction queued after the current step."
+                            : "Compacting context. History and tool results are preserved."
+                      }
+                    />
+                  )}
+                <SkillCommandList commands={commands} locale={locale} />
+                {skillVersionIds.length > 0 && (
+                  <Flex gap="spacing-1" wrap="wrap">
+                    {skillVersionIds.map((id) => (
+                      <Button
+                        key={id}
+                        view="outlined"
+                        size="s"
+                        disabled={busy || readOnly}
+                        onClick={() =>
+                          setSkillVersionIds((ids) =>
+                            ids.filter((x) => x !== id),
+                          )
+                        }
+                      >
+                        {commands.catalog.data?.extensions.find(
+                          (x) => x.versionId === id,
+                        )?.name ?? (locale === "ru" ? "Скилл" : "Skill")}{" "}
+                        <Icon data={Xmark} size={12} />
+                      </Button>
+                    ))}
+                  </Flex>
+                )}
+                {mcpConnectionIds.length > 0 && (
+                  <Flex gap="spacing-1" wrap="wrap">
+                    {mcpConnectionIds.map((connectionId) => (
+                      <Button
+                        key={connectionId}
+                        view="outlined"
+                        size="s"
+                        disabled={busy || readOnly}
+                        aria-label={
+                          (locale === "ru"
+                            ? "Убрать ссылку MCP: "
+                            : "Remove MCP reference: ") +
+                          (commands.catalog.data?.extensions.find(
+                            (x) => x.kind === "mcp" && x.id === connectionId,
+                          )?.name ?? connectionId)
+                        }
+                        onClick={() =>
+                          setMcpConnectionIds((ids) =>
+                            ids.filter((id) => id !== connectionId),
+                          )
+                        }
+                      >
+                        MCP ·{" "}
+                        {commands.catalog.data?.extensions.find(
+                          (x) => x.kind === "mcp" && x.id === connectionId,
+                        )?.name ??
+                          (locale === "ru" ? "Подключение" : "Connection")}
+                        <Icon data={Xmark} size={12} />
+                      </Button>
+                    ))}
+                  </Flex>
+                )}
+                {revisionReferences.length > 0 && (
+                  <ReferenceChips
+                    references={revisionReferences}
+                    locale={locale}
+                    disabled={busy || readOnly}
+                    remove={(index) =>
+                      setRevisionReferences((refs) =>
+                        refs.filter((_, i) => i !== index),
+                      )
+                    }
+                  />
+                )}
+                <TextArea
+                  controlRef={promptControl}
+                  value={prompt}
+                  onUpdate={setPrompt}
+                  placeholder={t("prompt")}
+                  minRows={2}
+                  maxRows={8}
+                  view="clear"
+                  disabled={readOnly || busy || !selected}
+                  controlProps={{
+                    ...commands.inputProps,
+                    "aria-label": t("prompt"),
+                    maxLength: 32000,
+                  }}
+                  onKeyDown={(e) => {
+                    if (commands.onKeyDown(e)) return;
+                    if (
+                      e.key === "Enter" &&
+                      !e.shiftKey &&
+                      !e.nativeEvent.isComposing
+                    ) {
+                      e.preventDefault();
+                      if (prompt.trim()) void send(prompt);
+                    }
+                  }}
+                />
+                <Flex
+                  className="agent-composer-toolbar"
+                  gap="spacing-2"
+                  alignItems="flex-end"
+                  justifyContent="space-between"
+                  minWidth="0"
+                >
+                  <Flex
+                    className="agent-composer-controls"
+                    gap="spacing-2"
+                    alignItems="center"
+                    minWidth="0"
+                    wrap="wrap"
+                  >
+                    <ComposerAddMenu
+                      locale={locale}
+                      onSearchProject={
+                        scopeProject &&
+                        capabilities.flags.projectSearch !== false &&
+                        !searchProject
+                          ? () => {
+                              setCollection("");
+                              setSearchProject(true);
+                            }
+                          : undefined
+                      }
+                      attachmentCount={fileIds.length}
+                      disabled={readOnly || busy}
+                      onChoose={(item) => {
+                        if (item === "attachments") {
+                          setAttachmentDraft(fileIds);
+                          setShowFiles(true);
+                        } else setExtensionKind(item);
+                      }}
+                    />
+                    <Select
+                      aria-label={t("model")}
+                      value={selected ? [selected] : []}
+                      filterable
+                      filterPlaceholder={
+                        locale === "ru" ? "Найти модель…" : "Find a model…"
+                      }
+                      popupWidth={320}
+                      popupClassName="model-picker-popup"
+                      options={[
+                        ...new Set(models.map((m) => m.group || "Other")),
+                      ]
+                        .sort()
+                        .map((group) => ({
+                          label:
+                            group === "Other" && locale === "ru"
+                              ? "Другие"
+                              : group,
+                          options: models
+                            .filter(
+                              (m) =>
+                                (m.group || "Other") === group &&
+                                (!providerFilter ||
+                                  m.providerId === providerFilter),
+                            )
+                            .map((m) => ({
+                              value: JSON.stringify([m.providerId, m.id]),
+                              content: m.name || m.id,
+                              data: m,
+                            })),
+                        }))
+                        .filter((g) => g.options.length)}
+                      renderPopup={({ renderFilter, renderList }) => (
+                        <Flex
+                          direction="column"
+                          className="model-picker-content"
+                        >
+                          <Flex
+                            className="model-provider-filters"
+                            padding="spacing-2"
+                            gap="spacing-1"
+                          >
+                            <Button
+                              size="s"
+                              view={providerFilter ? "flat" : "outlined"}
+                              onClick={() => setProviderFilter("")}
+                            >
+                              {locale === "ru" ? "Все" : "All"}
+                            </Button>
+                            {[
+                              ...new Map(
+                                models.map((m) => [m.providerId, m] as const),
+                              ).entries(),
+                            ].map(([provider, model]) => (
+                              <Button
+                                key={provider}
+                                size="s"
+                                view={
+                                  providerFilter === provider
+                                    ? "outlined"
+                                    : "flat"
+                                }
+                                onClick={() => setProviderFilter(provider)}
+                              >
+                                {model.providerName}
+                              </Button>
+                            ))}
+                          </Flex>
+                          {renderFilter()}
+                          {renderList()}
+                        </Flex>
+                      )}
+                      onUpdate={(v) => {
+                        setSelected(v[0] ?? "");
+                        setReasoning("default");
+                        if (v[0]) {
+                          const [providerId, model] = JSON.parse(v[0]);
+                          persistChoice({
+                            providerId,
+                            model,
+                            reasoning: "default",
+                          });
+                        }
+                      }}
+                      filterOption={(option, filter) => {
+                        const model = option.data;
+                        return [
+                          option.content,
+                          model?.id,
+                          model?.providerName,
+                          ...modelSummary(model?.reference, locale),
+                        ]
+                          .join(" ")
+                          .toLocaleLowerCase(locale)
+                          .includes(filter.trim().toLocaleLowerCase(locale));
+                      }}
+                      getOptionHeight={() => 52}
+                      renderOption={(option) => (
+                        <Flex alignItems="center" gap="spacing-2" minWidth="0">
+                          <ModelLogo
+                            brand={option.data?.reference?.modelBrand}
+                            fallback={option.data?.providerBrand}
+                          />
+                          <Flex direction="column" minWidth="0">
+                            <Text ellipsis>{option.content}</Text>
+                            <Text
+                              ellipsis
+                              variant="caption-2"
+                              color="secondary"
+                            >
+                              {[
+                                option.data?.providerName,
+                                ...modelSummary(option.data?.reference, locale),
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </Text>
+                          </Flex>
+                        </Flex>
+                      )}
+                      renderControl={({ triggerProps, ref }) => (
+                        <Button
+                          {...triggerProps}
+                          ref={ref as Ref<HTMLButtonElement>}
+                          view="flat"
+                          className="model-trigger"
+                        >
+                          <span className="model-trigger-label">
+                            {selectedModel?.name ||
+                              selectedModel?.id ||
+                              t("model")}
+                          </span>
+                          <Icon data={ChevronDown} size={12} />
+                        </Button>
+                      )}
+                    />
+                    <ReasoningControl
+                      profile={selectedModel?.reasoning}
+                      value={reasoning}
+                      onChange={(value) => {
+                        setReasoning(value);
+                        persistChoice({ reasoning: value });
+                      }}
+                      locale={locale}
+                      disabled={busy || readOnly}
+                    />
+                    {(codeEnabled || capabilities.flags.mcp === true) && (
+                      <Select
+                        aria-label={
+                          locale === "ru"
+                            ? "Подтверждение действий"
+                            : "Action approval"
+                        }
+                        value={[active?.approval_mode ?? effectiveApprovalMode]}
+                        disabled={
+                          busy ||
+                          Boolean(active) ||
+                          readOnly ||
+                          Boolean(id && snapshot?.conversation.id !== id)
+                        }
+                        options={[
+                          {
+                            value: "ask",
+                            content: locale === "ru" ? "Спрашивать" : "Ask me",
+                          },
+                          ...(permissionOptions.data?.arbiterEnabled
+                            ? [
+                                {
+                                  value: "arbiter",
+                                  content:
+                                    locale === "ru"
+                                      ? "Подтверждать за меня"
+                                      : "Approve for me",
+                                },
+                              ]
+                            : []),
+                          { value: "full", content: fullAccessLabel },
+                        ]}
+                        onUpdate={(v) => {
+                          if (v[0] === "full") {
+                            if (approvalMode !== "full")
+                              setConfirmFullAccess(true);
+                            return;
+                          }
+                          const value = v[0] === "arbiter" ? "arbiter" : "ask";
+                          chooseApproval(value);
+                        }}
+                        renderOption={(option) =>
+                          option.value === "full" ? (
+                            <Text color="danger">{option.content}</Text>
+                          ) : (
+                            <Text>{option.content}</Text>
+                          )
+                        }
+                        renderSelectedOptions={(options) =>
+                          options[0]?.value === "full" ? (
+                            <Text color="danger">{fullAccessLabel}</Text>
+                          ) : (
+                            options[0]?.content
+                          )
+                        }
+                      />
+                    )}
+                  </Flex>
+                  {active && !isCompactionPrompt && (
+                    <Button
+                      view="action"
+                      size="l"
+                      disabled={
+                        readOnly ||
+                        busy ||
+                        !modelAvailable ||
+                        approvalUnavailable ||
+                        !prompt.trim() ||
+                        Boolean(queueSubmission.pending)
+                      }
+                      loading={Boolean(
+                        queueSubmission.pending &&
+                          !queueSubmission.pending.uncertain,
+                      )}
+                      onClick={() => void enqueueDraft(prompt)}
+                    >
+                      {queueLabel}
+                    </Button>
+                  )}
+                  <Tooltip
+                    content={
+                      active ? t("stop") : queueWaiting ? queueLabel : t("send")
+                    }
+                  >
+                    <Button
+                      className="agent-composer-submit"
+                      view="action"
+                      size="l"
+                      aria-label={
+                        active && !isCompactionPrompt
+                          ? t("stop")
+                          : queueWaiting
+                            ? queueLabel
+                            : t("send")
+                      }
+                      disabled={
+                        readOnly ||
+                        busy ||
+                        (!active &&
+                          (Boolean(queueSubmission.pending) ||
+                            !modelAvailable ||
+                            approvalUnavailable ||
+                            !prompt.trim()))
+                      }
+                      onClick={() => {
+                        if (active && !isCompactionPrompt)
+                          void action(async () => {
+                            await api.request(
+                              "/runs/" + active.id + "/cancel",
+                              "POST",
+                            );
+                            if (id) await load(id);
+                          });
+                        else void send(prompt);
+                      }}
+                    >
+                      <Icon
+                        data={
+                          active && !isCompactionPrompt ? CircleStop : ArrowUp
+                        }
+                      />
+                    </Button>
+                  </Tooltip>
+                </Flex>
+              </Flex>
+            </Card>
+            <Flex justifyContent="center" paddingBlockStart="spacing-2">
+              <Text variant="caption-2" color="secondary">
+                {t("disclaimer")}
+              </Text>
+              {lastRun?.usage && lastRun.usage.reported !== false && (
+                <Tooltip
+                  content={t("tokens") + ": " + lastRun.usage.totalTokens}
+                >
+                  <Text variant="caption-2" color="secondary">
+                    {" "}
+                    · {lastRun.usage.totalTokens}
+                  </Text>
+                </Tooltip>
+              )}
+            </Flex>
+          </Box>
+          <ExtensionPicker
+            api={api}
+            locale={locale}
+            projectId={scopeProject}
+            conversationId={id ?? initialChat}
+            workspace={codeEnabled}
+            disabled={readOnly}
+            onTry={(item, example) => {
+              if (item.kind === "skill" && item.versionId)
+                setSkillVersionIds((ids) => [
+                  ...new Set([...ids, item.versionId!]),
+                ]);
+              if (item.kind === "mcp")
+                setMcpConnectionIds((ids) => [...new Set([...ids, item.id])]);
+              setPrompt((text) =>
+                text.trim() ? text + "\n\n" + example : example,
+              );
+              requestAnimationFrame(() => promptControl.current?.focus());
+            }}
+            selection={{
+              kind: extensionKind,
+              onClose: () => setExtensionKind(null),
             }}
           />
-        </Dialog>
-        <Dialog
-          open={dialog !== null}
-          onOpenChange={(open) => {
-            if (!open) setDialog(null);
-          }}
-        >
-          <Dialog.Header
-            caption={t(
-              dialog === "rename"
-                ? "rename"
-                : dialog === "delete"
-                  ? "remove"
-                  : "branch",
-            )}
-          />
-          <Dialog.Body>
-            {error && <Alert theme="danger" message={t(error)} />}
-            {dialog === "delete" ? (
-              <Text>{t("removeHint")}</Text>
-            ) : dialog === "edit" ? (
-              <div className="stack">
-                <Text>{t("branchHint")}</Text>
-                <TextArea
-                  minRows={5}
-                  aria-label={t("prompt")}
+          <Dialog
+            open={confirmFullAccess}
+            onOpenChange={setConfirmFullAccess}
+            maxWidth="s"
+          >
+            <Dialog.Header caption={fullAccessLabel} />
+            <Dialog.Body>
+              <Alert
+                theme="warning"
+                message={
+                  locale === "ru"
+                    ? "Режим сохранится для этой беседы, пока вы его не переключите. Агент сможет выполнять команды и вызывать доступные инструменты без подтверждения. В локальной рабочей области команды выполняются на вашем компьютере."
+                    : "This mode stays on for this conversation until you change it. The agent can execute commands and invoke available tools without confirmation. In a local workspace, commands run on your computer."
+                }
+              />
+            </Dialog.Body>
+            <Dialog.Footer
+              textButtonCancel={locale === "ru" ? "Отмена" : "Cancel"}
+              textButtonApply={
+                locale === "ru"
+                  ? "Включить для беседы"
+                  : "Enable for this conversation"
+              }
+              propsButtonApply={{ disabled: busy }}
+              onClickButtonCancel={() => setConfirmFullAccess(false)}
+              onClickButtonApply={() => chooseApproval("full")}
+            />
+          </Dialog>
+          <Dialog open={showFiles} maxWidth="l" onOpenChange={setShowFiles}>
+            <Dialog.Header caption={rt("attachments")} />
+            <Dialog.Body>
+              {(!id || snapshot) && (
+                <FilesPanel
+                  key={scopeProject + ":" + (id ?? "new")}
+                  api={api}
+                  locale={locale}
+                  onExpired={onExpired}
+                  projectId={scopeProject}
+                  readOnly={readOnly}
+                  selected={attachmentDraft}
+                  onSelect={setAttachmentDraft}
+                />
+              )}
+            </Dialog.Body>
+            <Dialog.Footer
+              textButtonCancel={rt("cancel")}
+              textButtonApply={
+                u("choose") +
+                (attachmentDraft.length ? ` (${attachmentDraft.length})` : "")
+              }
+              onClickButtonCancel={() => setShowFiles(false)}
+              onClickButtonApply={() => {
+                setFileIds(attachmentDraft);
+                setShowFiles(false);
+              }}
+            />
+          </Dialog>
+          <Dialog
+            open={dialog !== null}
+            onOpenChange={(open) => {
+              if (!open) setDialog(null);
+            }}
+          >
+            <Dialog.Header
+              caption={t(
+                dialog === "rename"
+                  ? "rename"
+                  : dialog === "delete"
+                    ? "remove"
+                    : "branch",
+              )}
+            />
+            <Dialog.Body>
+              {error && <Alert theme="danger" message={t(error)} />}
+              {dialog === "delete" ? (
+                <Text>{t("removeHint")}</Text>
+              ) : dialog === "edit" ? (
+                <div className="stack">
+                  <Text>{t("branchHint")}</Text>
+                  <TextArea
+                    minRows={5}
+                    aria-label={t("prompt")}
+                    value={draft}
+                    onUpdate={setDraft}
+                    controlProps={{ maxLength: 32000 }}
+                  />
+                </div>
+              ) : (
+                <TextInput
+                  aria-label={t("title")}
                   value={draft}
                   onUpdate={setDraft}
-                  controlProps={{ maxLength: 32000 }}
+                  controlProps={{ maxLength: 200 }}
                 />
-              </div>
-            ) : (
-              <TextInput
-                aria-label={t("title")}
-                value={draft}
-                onUpdate={setDraft}
-                controlProps={{ maxLength: 200 }}
-              />
-            )}
-          </Dialog.Body>
-          <Dialog.Footer
-            textButtonCancel={t("cancel")}
-            textButtonApply={t(dialog === "delete" ? "remove" : "save")}
-            loading={busy}
-            propsButtonApply={{
-              disabled: dialog !== "delete" && !draft.trim(),
-            }}
-            onClickButtonCancel={() => setDialog(null)}
-            onClickButtonApply={() => {
-              if (dialog === "edit") {
-                void send(draft, undefined, editing?.parent_id ?? null).then(
-                  (v) => {
-                    if (v !== false) setDialog(null);
-                  },
-                );
-              } else
-                void action(async () => {
-                  if (!id) return;
-                  if (dialog === "delete") {
-                    await api.request("/conversations/" + id, "DELETE");
-                    setId(null);
-                    setSnapshot(null);
-                    selectConversation(null);
-                  } else {
-                    await api.request("/conversations/" + id, "PATCH", {
-                      title: draft,
-                    });
-                    await load(id);
-                  }
-                  await list();
-                  setDialog(null);
-                });
+              )}
+            </Dialog.Body>
+            <Dialog.Footer
+              textButtonCancel={t("cancel")}
+              textButtonApply={t(dialog === "delete" ? "remove" : "save")}
+              loading={busy}
+              propsButtonApply={{
+                disabled: dialog !== "delete" && !draft.trim(),
+              }}
+              onClickButtonCancel={() => setDialog(null)}
+              onClickButtonApply={() => {
+                if (dialog === "edit") {
+                  void send(draft, undefined, editing?.parent_id ?? null).then(
+                    (v) => {
+                      if (v !== false) setDialog(null);
+                    },
+                  );
+                } else
+                  void action(async () => {
+                    if (!id) return;
+                    if (dialog === "delete") {
+                      await api.request("/conversations/" + id, "DELETE");
+                      setId(null);
+                      setSnapshot(null);
+                      selectConversation(null);
+                    } else {
+                      await api.request("/conversations/" + id, "PATCH", {
+                        title: draft,
+                      });
+                      await load(id);
+                    }
+                    await list();
+                    setDialog(null);
+                  });
+              }}
+            />
+          </Dialog>
+        </div>
+        {infoOpen && (
+          <ConversationInfo
+            snapshot={snapshot}
+            selectedModel={selectedModel}
+            locale={locale}
+            onClose={() => {
+              setInfoOpen(false);
+              infoTrigger.current?.focus();
             }}
           />
-        </Dialog>
+        )}
+        {panelOpen && id && (
+          <CodeWorkspace
+            key={id}
+            api={api}
+            conversationId={id}
+            guardKeyRef={fileGuard}
+            reviewRun={lastRun?.mode === "code" ? lastRun : undefined}
+            locale={locale}
+            onClose={() => {
+              setPanelOpen(false);
+              panelTrigger.current?.focus();
+            }}
+          />
+        )}
       </div>
-      {infoOpen && (
-        <ConversationInfo
-          snapshot={snapshot}
-          selectedModel={selectedModel}
-          locale={locale}
-          onClose={() => {
-            setInfoOpen(false);
-            infoTrigger.current?.focus();
-          }}
-        />
-      )}
-      {panelOpen && id && (
-        <CodeWorkspace
-          key={id}
-          api={api}
-          conversationId={id}
-          guardKeyRef={fileGuard}
-          locale={locale}
-          onClose={() => {
-            setPanelOpen(false);
-            panelTrigger.current?.focus();
-          }}
-        />
-      )}
-    </div>
+    </RevisionComposerContext.Provider>
   );
 }

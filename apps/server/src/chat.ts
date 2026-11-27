@@ -1,7 +1,19 @@
+import { runExtensionsSnapshot } from "./run-extensions.ts";
+import { registerRollbackPreview } from "./rollback-preview.ts";
+import { workspaceOwner } from "@runoza/execution";
+import { registerConversationQueue } from "./conversation-queue.ts";
+import { pauseConversationQueue } from "@runoza/chat";
+import type { GenerationAttempt } from "@runoza/contracts";
+import { readRunPlan, writeRunPlan } from "@runoza/resources";
+import { planContentSchema, type PlanContent } from "@runoza/contracts";
+import type { StorageService } from "@runoza/storage";
 import { rememberDecision, type GrantScope } from "@runoza/permissions";
 import { registerPermissions } from "./permissions.ts";
 import {
   validToolAnswer,
+  revisionReferenceSchema,
+  revisionReferencesSchema,
+  type RevisionReferenceInput,
   type ToolQuestion,
   type ToolInputResponse,
   providerConnectionJsonSchema,
@@ -13,7 +25,12 @@ import {
   type ModelMetadata,
   type ModelOverride,
 } from "@runoza/contracts";
-import { projectAccess } from "@runoza/resources";
+import {
+  projectAccess,
+  revisionDiff,
+  REVISION_BUNDLE_BYTES,
+  resolveRevisionReference,
+} from "@runoza/resources";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { sql } from "@runoza/db";
@@ -48,10 +65,16 @@ const str = (maxLength: number) => ({
   maxLength,
 });
 const idParams = object({ id: uuid }, ["id"]);
-export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
+export async function registerChat(
+  app: FastifyInstance,
+  ctx: AuthContext,
+  storage?: StorageService,
+) {
   const { db, config } = ctx;
   await registerModels(app, ctx);
+  await registerRollbackPreview(app, ctx);
   await registerPermissions(app, ctx);
+  await registerConversationQueue(app, ctx, storage);
   app.get("/api/v1/admin/assistant-settings", async (req) => {
     const u = await ctx.identity(req);
     requireSystem(u);
@@ -158,7 +181,7 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
                   const action = (
                     await sql<
                       import("@runoza/contracts").CodeAction
-                    >`SELECT a.id,a.tool,a.input,a.status,a.output,a.exit_code,a.file_id FROM code_actions a JOIN chat_runs r ON r.id=a.run_id WHERE a.id=${part.actionId}::uuid AND r.conversation_id=${source.id}::uuid`.execute(
+                    >`SELECT a.id,a.tool,a.input,a.status,a.output,a.exit_code,a.file_id,a.check_label FROM code_actions a JOIN chat_runs r ON r.id=a.run_id WHERE a.id=${part.actionId}::uuid AND r.conversation_id=${source.id}::uuid`.execute(
                       trx,
                     )
                   ).rows[0];
@@ -182,6 +205,9 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
           await sql`INSERT INTO messages(id,conversation_id,parent_id,role,content,reasoning,parts,created_at,search_project,search_collection) VALUES (${id}::uuid,${conversation.id}::uuid,${parent}::uuid,${m.role},${m.content},${m.reasoning ?? ""},${parts === null ? null : JSON.stringify(parts)}::jsonb,${m.created_at},${m.search_project ?? false},${m.search_collection ?? null}::uuid)`.execute(
             trx,
           );
+          await sql`UPDATE messages SET revision_references=(SELECT revision_references FROM messages WHERE id=${m.id}::uuid) WHERE id=${id}::uuid`.execute(
+            trx,
+          );
           await sql`INSERT INTO message_sources(message_id,ordinal,passage_id) SELECT ${id}::uuid,ordinal,passage_id FROM message_sources WHERE message_id=${m.id}::uuid`.execute(
             trx,
           );
@@ -193,7 +219,15 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
         await sql`UPDATE conversations SET head_id=${parent}::uuid WHERE id=${conversation.id}::uuid`.execute(
           trx,
         );
-        return { ...conversation, head_id: parent, draft };
+        return {
+          ...conversation,
+          head_id: parent,
+          draft,
+          draftRevisionReferences:
+            selectedMessage?.role === "user"
+              ? selectedMessage.revision_references
+              : undefined,
+        };
       });
     },
   );
@@ -414,10 +448,15 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
             };
           })(),
           runs: (
-            await sql`SELECT id,conversation_id,user_message_id,assistant_message_id,status,error_code,model,provider_id,seq,usage,mode,approval_mode,code_state,compaction_state,compaction_count,compaction_only,skill_versions,mcp_connections,created_at,finished_at,COALESCE(context_limit,(SELECT (m.metadata->>'contextLength')::integer FROM provider_models m WHERE m.provider_id=chat_runs.provider_id AND m.id=chat_runs.model)) AS context_limit,max_agent_steps,EXISTS(SELECT 1 FROM run_dismissals d WHERE d.run_id=chat_runs.id AND d.user_id=${u.id}::uuid) AS dismissed FROM chat_runs WHERE conversation_id=${req.params.id}::uuid ORDER BY created_at`.execute(
+            await sql<
+              ChatRun & { extension_manifest: unknown }
+            >`SELECT id,conversation_id,user_message_id,assistant_message_id,status,error_code,model,provider_id,seq,usage,mode,intent,model_round,model_recovery_count,model_journal_state,model_journal_reason,generation_calls,recovery_count,plan_version,plan_target,accepted_plan,approval_mode,code_state,compaction_state,compaction_count,compaction_only,coding_config,context_estimate,microcompaction_count,skill_versions,mcp_connections,extension_manifest,created_at,finished_at,COALESCE(context_limit,(SELECT (m.metadata->>'contextLength')::integer FROM provider_models m WHERE m.provider_id=chat_runs.provider_id AND m.id=chat_runs.model)) AS context_limit,max_agent_steps,EXISTS(SELECT 1 FROM run_dismissals d WHERE d.run_id=chat_runs.id AND d.user_id=${u.id}::uuid) AS dismissed FROM chat_runs WHERE conversation_id=${req.params.id}::uuid ORDER BY created_at`.execute(
               trx,
             )
-          ).rows,
+          ).rows.map(({ extension_manifest, ...run }) => ({
+            ...run,
+            extensions: runExtensionsSnapshot(extension_manifest),
+          })),
         }));
     },
   );
@@ -638,6 +677,8 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
     Params: { id: string };
     Body: {
       approvalMode?: "ask" | "arbiter" | "full";
+      intent?: "plan" | "execute";
+      planAcceptance?: { runId: string; version: number };
       executionTarget?: "server";
       mode?: "chat" | "code";
       requestId: string;
@@ -650,6 +691,7 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
       searchProject?: boolean;
       collectionId?: string;
       fileIds?: string[];
+      revisionReferences?: RevisionReferenceInput[];
       skillVersionIds?: string[];
       mcpConnectionIds?: string[];
     };
@@ -660,6 +702,11 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
         params: idParams,
         body: object(
           {
+            intent: { enum: ["plan", "execute"] },
+            planAcceptance: object(
+              { runId: uuid, version: { type: "integer", minimum: 1 } },
+              ["runId", "version"],
+            ),
             executionTarget: { enum: ["server"] },
             mode: { enum: ["chat", "code"] },
             requestId: uuid,
@@ -695,6 +742,7 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
             },
             searchProject: { type: "boolean" },
             collectionId: uuid,
+            revisionReferences: revisionReferencesSchema,
             fileIds: {
               type: "array",
               items: uuid,
@@ -711,7 +759,20 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
       await rateLimit(db, "send:" + u.id, 30);
       return createRun(db, u, req.params.id, req.body, {
         useConversationApproval: true,
+        storage,
       });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: RevisionReferenceInput }>(
+    "/api/v1/conversations/:id/revision-references/resolve",
+    { schema: { params: idParams, body: revisionReferenceSchema } },
+    async (req, reply) => {
+      const u = await ctx.identity(req);
+      await owned(db, u, req.params.id);
+      await rateLimit(db, "revision-reference:" + u.id, 60);
+      const result = await resolveRevisionReference(db, u, storage, req.body);
+      await owned(db, u, req.params.id);
+      return reply.header("cache-control", "private, no-store").send(result);
     },
   );
   const ownRun = async (
@@ -728,6 +789,251 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
     await owned(db, u, r.conversation_id, req.method !== "GET");
     return r;
   };
+  app.get<{ Params: { id: string }; Querystring: { offset?: number } }>(
+    "/api/v1/runs/:id/attempts",
+    {
+      schema: {
+        params: idParams,
+        querystring: object(
+          { offset: { type: "integer", minimum: 0, maximum: 10000 } },
+          [],
+        ),
+      },
+    },
+    async (req, reply) => {
+      const run = await ownRun(req, req.params.id),
+        offset = req.query.offset ?? 0;
+      const rows = (
+        await sql<GenerationAttempt>`SELECT id,ordinal,parent_id,kind,reason,status,error_code,output_limit,context_limit,text_chars,usage,created_at,finished_at,research_run_id FROM generation_attempts WHERE run_id=${run.id}::uuid ORDER BY ordinal LIMIT 101 OFFSET ${offset}`.execute(
+          db,
+        )
+      ).rows;
+      await ownRun(req, req.params.id);
+      return reply.header("cache-control", "private, no-store").send({
+        attempts: rows.slice(0, 100),
+        nextOffset: rows.length > 100 ? offset + 100 : null,
+        used: run.generation_calls ?? 0,
+        limit: run.max_agent_steps,
+        recoveries: run.recovery_count ?? 0,
+      });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/runs/:id/research",
+    { schema: { params: idParams } },
+    async (req, reply) => {
+      const run = await ownRun(req, req.params.id),
+        user = await ctx.identity(req);
+      const owner = (
+        await sql<{
+          owner_id: string;
+        }>`SELECT owner_id FROM chat_runs WHERE id=${run.id}::uuid`.execute(db)
+      ).rows[0]!;
+      const children = (
+        await sql`SELECT id,parent_run_id,action_id,depth,task,model,status,error_code,model_calls,tool_calls,summary,truncated,evidence,usage,created_at,finished_at FROM research_runs WHERE parent_run_id=${run.id}::uuid ORDER BY created_at,id LIMIT 3`.execute(
+          db,
+        )
+      ).rows;
+      await ownRun(req, run.id);
+      return reply
+        .header("cache-control", "private, no-store")
+        .send({ children, canManage: owner.owner_id === user.id });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/runs/:id/plan",
+    { schema: { params: idParams } },
+    async (req, reply) => {
+      await ownRun(req, req.params.id);
+      const plan = await readRunPlan(db, req.params.id);
+      await ownRun(req, req.params.id);
+      return reply.header("cache-control", "private, no-store").send({ plan });
+    },
+  );
+  app.put<{
+    Params: { id: string };
+    Body: { expectedVersion: number; plan: PlanContent };
+  }>(
+    "/api/v1/runs/:id/plan",
+    {
+      schema: {
+        params: idParams,
+        body: object(
+          {
+            expectedVersion: { type: "integer", minimum: 0 },
+            plan: planContentSchema,
+          },
+          ["expectedVersion", "plan"],
+        ),
+      },
+    },
+    async (req) => {
+      const u = await ctx.identity(req);
+      return db.transaction().execute(async (trx) => {
+        const run = (
+          await sql<ChatRun>`SELECT * FROM chat_runs WHERE id=${req.params.id}::uuid`.execute(
+            trx,
+          )
+        ).rows[0];
+        if (!run) fail(404, "NOT_FOUND");
+        await owned(trx, u, run.conversation_id, true);
+        if (run.mode !== "code") fail(400, "PLAN_UNAVAILABLE");
+        await chatEnabled(trx, u.organization_id);
+        return {
+          plan: await writeRunPlan(
+            trx,
+            run.id,
+            req.body.expectedVersion,
+            req.body.plan,
+          ),
+        };
+      });
+    },
+  );
+  app.get<{
+    Params: { id: string };
+    Querystring: { offset?: number; actionId?: string };
+  }>(
+    "/api/v1/runs/:id/changes",
+    {
+      schema: {
+        params: idParams,
+        querystring: object(
+          {
+            offset: { type: "integer", minimum: 0, maximum: 10000 },
+            actionId: uuid,
+          },
+          [],
+        ),
+      },
+    },
+    async (req) => {
+      const run = await ownRun(req, req.params.id);
+      const offset = req.query.offset ?? 0;
+      const rows = (
+        await sql`SELECT w.id,w.action_id,w.run_id,w.workspace,w.path,w.before_hash,w.after_hash,w.coverage,w.status,w.created_at,(f.status='ready') IS TRUE AS content_available FROM workspace_changes w LEFT JOIN files f ON f.id=w.revision_file_id WHERE w.run_id=${run.id}::uuid ${req.query.actionId ? sql`AND w.action_id=${req.query.actionId}::uuid` : sql``} ORDER BY w.created_at,w.id LIMIT 101 OFFSET ${offset}`.execute(
+          db,
+        )
+      ).rows;
+      let canPreviewRollback = false;
+      const viewer = await ctx.identity(req);
+      const hasRollbacks = Boolean(
+        (
+          await sql`SELECT id FROM rollback_operations WHERE run_id=${run.id}::uuid AND actor_id=${viewer.id}::uuid LIMIT 1`.execute(
+            db,
+          )
+        ).rows.length,
+      );
+      if (
+        process.env.RUNOZA_ROLLBACK_PREVIEW === "true" &&
+        !["queued", "running"].includes(run.status)
+      ) {
+        const u = await ctx.identity(req);
+        try {
+          await workspaceOwner(db, u.id, run.conversation_id);
+          canPreviewRollback = true;
+        } catch {
+          /* Saved review remains available without live workspace access. */
+        }
+      }
+      return {
+        canPreviewRollback,
+        hasRollbacks,
+        status: run.status,
+        changes: rows.slice(0, 100),
+        nextOffset: rows.length > 100 ? offset + 100 : null,
+      };
+    },
+  );
+  app.get<{ Params: { id: string; change: string } }>(
+    "/api/v1/runs/:id/changes/:change/diff",
+    { schema: { params: object({ id: uuid, change: uuid }) } },
+    async (req, reply) => {
+      const run = await ownRun(req, req.params.id);
+      const file = (
+        await sql<{
+          object_key: string;
+          sha256: string;
+          path: string;
+          before_hash: string | null;
+          after_hash: string | null;
+        }>`SELECT f.object_key,f.sha256,w.path,w.before_hash,w.after_hash FROM workspace_changes w JOIN files f ON f.id=w.revision_file_id WHERE w.id=${req.params.change}::uuid AND w.run_id=${run.id}::uuid AND f.status='ready' AND f.is_revision`.execute(
+          db,
+        )
+      ).rows[0];
+      if (!file) fail(404, "REVISION_UNAVAILABLE");
+      if (!storage) fail(503, "STORAGE_UNAVAILABLE");
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      req.raw.once("aborted", cancel);
+      const timeout = setTimeout(cancel, 15000);
+      try {
+        const result = await storage.get(
+          file.object_key,
+          undefined,
+          controller.signal,
+        );
+        const stop = () => result.body.destroy(Error("REVISION_UNAVAILABLE"));
+        controller.signal.addEventListener("abort", stop, { once: true });
+        let diff;
+        try {
+          controller.signal.throwIfAborted();
+          if ((result.length ?? 0) > REVISION_BUNDLE_BYTES)
+            fail(409, "REVISION_INVALID");
+          const chunks: Buffer[] = [];
+          let size = 0;
+          for await (const chunk of result.body) {
+            const bytes = Buffer.from(chunk);
+            size += bytes.length;
+            if (size > REVISION_BUNDLE_BYTES) fail(409, "REVISION_INVALID");
+            chunks.push(bytes);
+          }
+          try {
+            diff = revisionDiff(Buffer.concat(chunks), file, file.sha256);
+          } catch {
+            fail(409, "REVISION_INVALID");
+          }
+        } finally {
+          controller.signal.removeEventListener("abort", stop);
+          result.body.destroy();
+        }
+        await ownRun(req, run.id);
+        return reply.header("cache-control", "private, no-store").send(diff);
+      } finally {
+        clearTimeout(timeout);
+        req.raw.removeListener("aborted", cancel);
+      }
+    },
+  );
+  app.get<{ Params: { id: string; change: string } }>(
+    "/api/v1/runs/:id/changes/:change/content",
+    { schema: { params: object({ id: uuid, change: uuid }) } },
+    async (req, reply) => {
+      const run = await ownRun(req, req.params.id);
+      const file = (
+        await sql<{
+          object_key: string;
+        }>`SELECT f.object_key FROM workspace_changes w JOIN files f ON f.id=w.revision_file_id WHERE w.id=${req.params.change}::uuid AND w.run_id=${run.id}::uuid AND f.status='ready' AND f.is_revision`.execute(
+          db,
+        )
+      ).rows[0];
+      if (!file) fail(404, "REVISION_UNAVAILABLE");
+      if (!storage) fail(503, "STORAGE_UNAVAILABLE");
+      const result = await storage.get(file.object_key);
+      try {
+        await ownRun(req, run.id);
+      } catch (error) {
+        result.body.destroy();
+        throw error;
+      }
+      return reply
+        .header("content-type", "application/json")
+        .header("content-disposition", 'attachment; filename="revision.json"')
+        .header("x-content-type-options", "nosniff")
+        .header("cache-control", "private, no-store")
+        .send(result.body);
+    },
+  );
   app.get<{ Params: { id: string } }>(
     "/api/v1/runs/:id/activity",
     { schema: { params: idParams } },
@@ -760,7 +1066,7 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
           ).rows.length,
         ),
         actions: (
-          await sql`SELECT a.id,a.tool,a.input,a.status,a.output,a.exit_code,a.file_id,a.review_state,d.source AS approval_source,d.reason_code AS approval_reason,d.usage AS reviewer_usage,d.elapsed_ms AS reviewer_elapsed_ms FROM code_actions a LEFT JOIN permission_decisions d ON d.action_id=a.id WHERE run_id=${r.id}::uuid ORDER BY a.created_at,a.id`.execute(
+          await sql`SELECT a.id,a.tool,a.input,a.status,a.output,a.exit_code,a.file_id,a.check_label,a.review_state,d.source AS approval_source,d.reason_code AS approval_reason,d.usage AS reviewer_usage,d.elapsed_ms AS reviewer_elapsed_ms FROM code_actions a LEFT JOIN permission_decisions d ON d.action_id=a.id WHERE run_id=${r.id}::uuid ORDER BY a.created_at,a.id`.execute(
             db,
           )
         ).rows,
@@ -884,7 +1190,12 @@ export async function registerChat(app: FastifyInstance, ctx: AuthContext) {
     "/api/v1/runs/:id/cancel",
     { schema: { params: idParams } },
     async (req) => {
-      await ownRun(req, req.params.id);
+      const stopped = await ownRun(req, req.params.id);
+      await pauseConversationQueue(
+        db,
+        stopped.conversation_id,
+        "RUN_CANCELLED",
+      );
       await runEvent(
         db,
         req.params.id,

@@ -10,6 +10,7 @@ import {
 } from "@runoza/execution";
 import { uuid, object } from "@runoza/contracts";
 import type { AuthContext } from "./auth.ts";
+import { assertRollbackIdle } from "@runoza/resources";
 export async function registerWorkspace(
   app: FastifyInstance,
   ctx: AuthContext,
@@ -188,6 +189,10 @@ export async function registerWorkspace(
               fail(409, "IDEMPOTENCY_CONFLICT");
             return { id: requestId };
           }
+          await sql`SELECT id FROM conversations WHERE id=${conversationId}::uuid FOR UPDATE`.execute(
+            trx,
+          );
+          await assertRollbackIdle(trx, conversationId);
           const e =
             req.body.operation === "workspace.open"
               ? { generation: randomUUID() }
@@ -222,7 +227,7 @@ export async function registerWorkspace(
       async (req) => {
         const { u, conversationId } = await owner(req, req.params.id);
         const job = (
-          await sql`SELECT id,status,result,error_code FROM workspace_requests WHERE id=${req.params.actionId}::uuid AND conversation_id=${conversationId}::uuid AND actor_id=${u.id}::uuid`.execute(
+          await sql`SELECT id,status,result,error_code FROM workspace_requests WHERE id=${req.params.actionId}::uuid AND conversation_id=${conversationId}::uuid AND actor_id=${u.id}::uuid AND operation NOT IN ('rollback.preview','rollback.apply')`.execute(
             db,
           )
         ).rows[0];

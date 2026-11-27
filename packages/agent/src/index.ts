@@ -1,3 +1,30 @@
+import { createResearchTool, RESEARCH_PARENT_PROMPT } from "./research.ts";
+import { modelJournal, type ModelJournal } from "./model-journal.ts";
+export {
+  queueModelRecovery,
+  modelRecoveryInstructions,
+} from "./model-journal.ts";
+import { createReadBatchTool } from "./read-batch.ts";
+import { generationBudget } from "./generation-budget.ts";
+export { generationBudget } from "./generation-budget.ts";
+import { managedStream, type GenerationHooks } from "@runoza/providers";
+import {
+  toolAllowedInIntent,
+  planContentSchema,
+  type PlanContent,
+  type PlanTarget,
+} from "@runoza/contracts";
+import { readRunPlan, writeRunPlan } from "@runoza/resources";
+import { PLANNING_PROMPT } from "./prompt.ts";
+import { buildAgentPrompt, type CodingConfig } from "./prompt.ts";
+export { buildAgentPrompt, codingConfig, PLANNING_PROMPT } from "./prompt.ts";
+import {
+  editContent,
+  workspaceSearch,
+  type SearchInput,
+} from "./workspace-tools.ts";
+import { loopDecision, stableInput, type LoopState } from "./loop-guard.ts";
+import { changeJournal, observeWorkspace } from "./change-journal.ts";
 import { agentFiles, createFileTools } from "./agent-files.ts";
 import { limitToolResult, resultText, textPage } from "./result-budget.ts";
 import { historyTool } from "./history-tools.ts";
@@ -7,15 +34,16 @@ import { skillResource } from "./skill-resource.ts";
 import { createMcpDiscovery } from "./mcp-discovery.ts";
 import { createSkillTools } from "./skill-tools.ts";
 import { attemptAutomaticApproval } from "@runoza/permissions";
-import { inSpan, startSpan, failure } from "@runoza/telemetry";
+import { inSpan, startSpan, failure, recordMetrics } from "@runoza/telemetry";
 import {
   providerFailureCode,
+  ProviderError,
   contextBudget,
+  contextTokens,
   type ContextMessage,
 } from "@runoza/providers";
 import { mcpConfig, runMcp } from "./mcp-tools.ts";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { Model, Message } from "@earendil-works/pi-ai";
 import { randomUUID, createHash } from "node:crypto";
 import { Readable } from "node:stream";
@@ -51,6 +79,7 @@ export interface RuntimeInput {
   onThinking?(text: string): Promise<void>;
   onTool?(actionId: string): Promise<void>;
   maxSteps?: number;
+  generation?: GenerationHooks;
 }
 export interface AgentRuntime {
   run(input: RuntimeInput): Promise<void | {
@@ -120,13 +149,37 @@ export class PiAgentRuntime implements AgentRuntime {
       controller.signal,
       AbortSignal.timeout(3600000),
     ]);
+    let roundJournal: ModelJournal | undefined;
+    const originalOnTool = input.onTool;
+    input = {
+      ...input,
+      onTool: async (id) => {
+        await roundJournal?.link(id);
+        await originalOnTool?.(id);
+      },
+    };
     let fatal: string | undefined;
+    const journalOperation = async <T>(
+      operation: () => Promise<T>,
+    ): Promise<T> => {
+      try {
+        return await operation();
+      } catch (error) {
+        fatal =
+          error instanceof ExecutionError
+            ? error.code
+            : "MODEL_JOURNAL_UNAVAILABLE";
+        controller.abort();
+        throw error;
+      }
+    };
     let uncertainCommand = false;
     const state = async (value: string) => {
-      await sql`UPDATE chat_runs SET code_state=${value} WHERE id=${input.id}::uuid AND status='running'`.execute(
+      await sql`UPDATE chat_runs SET code_state=${value} WHERE id=${input.id}::uuid AND status='running' AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
         db,
       );
     };
+    let runLease: string | null | undefined;
     const authorized = async (capability?: "code" | "mcp" | "skills") => {
       signal.throwIfAborted();
       const r = (
@@ -136,12 +189,25 @@ export class PiAgentRuntime implements AgentRuntime {
           project_id: string | null;
           assistant_message_id: string;
           mode: string;
+          intent: string;
+          lease: string | null;
+          plan_target: PlanTarget | null;
           flags: Record<string, boolean>;
-        }>`SELECT r.owner_id,c.organization_id,c.project_id,r.assistant_message_id,r.mode,f.flags FROM chat_runs r JOIN conversations c ON c.id=r.conversation_id JOIN users u ON u.id=r.owner_id JOIN feature_flags f ON f.organization_id=c.organization_id JOIN provider_connections p ON p.id=r.provider_id WHERE r.id=${input.id}::uuid AND r.status='running' AND NOT u.disabled AND f.flags->>'chat'='true' AND p.enabled AND p.models ? r.model`.execute(
+          coding_config: CodingConfig | null;
+          desktop_workspace_id: string | null;
+          loop_guard: { tool?: LoopState };
+        }>`SELECT r.owner_id,c.organization_id,c.project_id,r.assistant_message_id,r.mode,r.intent,r.lease,r.plan_target,r.coding_config,r.loop_guard,c.desktop_workspace_id,f.flags FROM chat_runs r JOIN conversations c ON c.id=r.conversation_id JOIN users u ON u.id=r.owner_id JOIN feature_flags f ON f.organization_id=c.organization_id JOIN provider_connections p ON p.id=r.provider_id WHERE r.id=${input.id}::uuid AND r.status='running' AND NOT u.disabled AND EXISTS(SELECT 1 FROM memberships m WHERE m.user_id=u.id AND m.organization_id=c.organization_id) AND f.flags->>'chat'='true' AND p.enabled AND p.models ? r.model`.execute(
           db,
         )
       ).rows[0];
-      if (!r) throw new ExecutionError("RUN_CANCELLED");
+      if (!r || (runLease !== undefined && r.lease !== runLease))
+        throw new ExecutionError("RUN_CANCELLED");
+      if (
+        r.plan_target &&
+        r.plan_target.desktopWorkspaceId !== r.desktop_workspace_id
+      )
+        throw new ExecutionError("PLAN_TARGET_CHANGED");
+      runLease = r.lease;
       if (
         capability &&
         (!r.flags[capability] || (capability === "code" && r.mode !== "code"))
@@ -157,7 +223,7 @@ export class PiAgentRuntime implements AgentRuntime {
       if (lease) await lease.check();
       return r;
     };
-    const save = async (path: string, data: Buffer) => {
+    const save = async (path: string, data: Buffer, attach = true) => {
       const scope = await authorized(),
         id = randomUUID(),
         key = "files/" + id;
@@ -175,7 +241,7 @@ export class PiAgentRuntime implements AgentRuntime {
         ).rows[0]!;
         if (Number(q.total) + data.length > 1073741824 || q.count >= 1000)
           throw new ExecutionError("FILE_QUOTA");
-        await sql`INSERT INTO files(id,organization_id,owner_id,project_id,name,size,media_type,object_key) VALUES (${id}::uuid,${scope.organization_id}::uuid,${scope.owner_id}::uuid,${scope.project_id}::uuid,${path.split("/").at(-1)!},${data.length},'application/octet-stream',${key})`.execute(
+        await sql`INSERT INTO files(id,organization_id,owner_id,project_id,name,size,media_type,object_key,is_revision) VALUES (${id}::uuid,${scope.organization_id}::uuid,${scope.owner_id}::uuid,${attach ? scope.project_id : null}::uuid,${path.split("/").at(-1)!},${data.length},'application/octet-stream',${key},${!attach})`.execute(
           trx,
         );
       });
@@ -195,12 +261,13 @@ export class PiAgentRuntime implements AgentRuntime {
       );
       await db.transaction().execute(async (trx) => {
         await authorized();
-        await sql`UPDATE files SET status='ready',upload_id=NULL,sha256=${result.sha256},text_content=${extractText(path, data.length, data)},updated_at=now() WHERE id=${id}::uuid`.execute(
+        await sql`UPDATE files SET status='ready',upload_id=NULL,sha256=${result.sha256},text_content=${attach ? extractText(path, data.length, data) : null},updated_at=now() WHERE id=${id}::uuid`.execute(
           trx,
         );
-        await sql`INSERT INTO message_attachments(message_id,file_id) VALUES (${scope.assistant_message_id}::uuid,${id}::uuid)`.execute(
-          trx,
-        );
+        if (attach)
+          await sql`INSERT INTO message_attachments(message_id,file_id) VALUES (${scope.assistant_message_id}::uuid,${id}::uuid)`.execute(
+            trx,
+          );
       });
       return id;
     };
@@ -214,6 +281,8 @@ export class PiAgentRuntime implements AgentRuntime {
       modelCalls: 0,
       lastInputTokens: 0,
       reported: false,
+      cacheRead: 0,
+      cacheWrite: 0,
     };
     const connections = (
       await sql<{
@@ -225,10 +294,79 @@ export class PiAgentRuntime implements AgentRuntime {
       )
     ).rows;
     const initialScope = await authorized();
+    const generation =
+      input.generation ??
+      generationBudget(db, input.id, {
+        lease: initialScope.lease,
+        authorize: authorized,
+      });
+    const config = initialScope.coding_config;
+    const prompt = buildAgentPrompt({
+      code: initialScope.mode === "code",
+      planning: initialScope.intent === "plan",
+      target: initialScope.desktop_workspace_id ? "desktop" : "server",
+      instructions: input.instructions,
+      structuredTools: config?.structuredTools,
+    });
+    const systemPrompt =
+      (!config || config.promptVersion === "legacy-v1"
+        ? AGENT_SYSTEM_PROMPT +
+          input.instructions +
+          (initialScope.intent === "plan" ? "\n" + PLANNING_PROMPT : "")
+        : prompt.text) +
+      (config?.research && config.modelJournal ? RESEARCH_PARENT_PROMPT : "");
+    await sql`UPDATE chat_runs SET prompt_fingerprint=${createHash("sha256").update(systemPrompt).digest("hex")} WHERE id=${input.id}::uuid AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
+      db,
+    );
+    recordMetrics({
+      "runoza.prompt_version": config?.promptVersion ?? "legacy-v1",
+    });
+    let loop: LoopState = initialScope.loop_guard?.tool ?? {};
+    const journal = changeJournal(db, input.id, (path, bytes) =>
+      save(path, bytes, false),
+    );
+    const prepareCopy = async (
+      actionId: string,
+      path: string,
+      after: Buffer,
+      expectedHash: string | null,
+    ) => {
+      if (!config?.structuredTools) return;
+      let before: Buffer | null | undefined =
+        expectedHash === null ? null : undefined;
+      if (expectedHash !== null) {
+        try {
+          const previous = await lease!.executor.readFile(path, signal);
+          if (previous.sha256 !== expectedHash)
+            throw new ExecutionError("FILE_CONFLICT");
+          before = Buffer.from(previous.base64, "base64");
+        } catch (error) {
+          if (
+            !(error instanceof ExecutionError) ||
+            !["FILE_SIZE", "FILE_UNAVAILABLE"].includes(error.code)
+          )
+            throw error;
+          // Large/binary destination revisions may be unavailable. The atomic
+          // installer still validates the expected byte hash before mutation.
+        }
+      }
+      await journal.prepare(actionId, path, before, after);
+      await authorized("code");
+    };
     const files = agentFiles(db, input.id, () => authorized());
     const tools: AgentTool[] = [
       ...(initialScope.mode === "code" && initialScope.flags.code
-        ? ["execute", "publish_file", "read_file", "write_file", "files_export"]
+        ? [
+            "execute",
+            "publish_file",
+            "read_file",
+            "workspace_list",
+            "write_file",
+            "files_export",
+            ...(config?.structuredTools
+              ? ["workspace_search", "edit_file"]
+              : []),
+          ]
         : []),
       ...(initialScope.mode === "code" &&
       initialScope.flags.code &&
@@ -239,108 +377,166 @@ export class PiAgentRuntime implements AgentRuntime {
     ].map((name) => ({
       name,
       label: name,
-      description: name.startsWith("mcp_")
-        ? "Use mcp_search to find enabled connections and tools, then mcp_schema or mcp_list for schemas before mcp_call. Execution requires approval; metadata never grants permission."
-        : name === "files_export"
-          ? "Copy a virtual conversation file to a relative workspace destination for grep/jq or other code tools. Source path begins runoza-files/. Requires approval. Up to 10 MiB. expectedHash=null creates a new file; use the destination hash to replace. Parent directories must already exist."
-          : name === "skills_copy"
-            ? "Copy one enabled skill package resource to a relative workspace destination. Supports binary assets up to 10 MiB. Parent directories must exist. expectedHash=null creates a new file; use the current destination hash to replace. Copying never executes the file and requires approval."
-            : name === "execute"
-              ? "Run a shell command in the selected workspace. Each call requires user approval. Maximum 60 seconds; command 65536 characters. Use write_file for file contents."
-              : name === "write_file"
-                ? "Write UTF-8 content directly to a relative file. Up to 60000 UTF-8 bytes per chunk, 1 MiB total. expectedHash=null creates a new file; use read_file SHA-256 to replace or append. For larger content use multiple append=true chunks with the latest hash. Requires approval."
-                : name === "read_file"
-                  ? "Read a relative workspace file and its SHA-256 for conflict-safe edits. Up to 1 MiB; returns a bounded page with nextOffset (UTF-16 characters), total size and hash. Requires approval."
-                  : "Save a relative regular workspace file as a downloadable artifact. Maximum 1 MiB. Requires approval.",
-      parameters: name.startsWith("mcp_")
-        ? {
-            type: "object",
-            properties: {
-              connectionId: {
-                type: "string",
-              },
-              tool: { type: "string" },
-              offset: { type: "integer", minimum: 0 },
-              arguments: { type: "object", additionalProperties: true },
-            },
-            required:
-              name === "mcp_call"
-                ? ["connectionId", "tool", "arguments"]
-                : ["connectionId"],
-            additionalProperties: false,
-          }
-        : name === "files_export"
+      description:
+        name === "workspace_list"
+          ? "List up to 200 entries in a relative workspace directory. Empty path lists the root. Requires approval. Never follows symlinks."
+          : name === "edit_file"
+            ? "Replace exactly one unique UTF-8 fragment in a relative workspace file, preserving all other bytes. Requires current SHA-256, approval and an exact match. Maximum 1 MiB file, 60000 bytes per fragment. Never force a stale edit."
+            : name === "workspace_search"
+              ? "Search literal text in relative workspace files with a bounded traversal. path=empty searches the workspace root; glob supports * and ?. Excludes symlinks, secret and internal paths, generated/dependency folders. Returns line numbers, SHA-256, budgets and truncation; no results is not proof of absence when truncated. Requires approval."
+              : name.startsWith("mcp_")
+                ? "Use mcp_search to find enabled connections and tools, then mcp_schema or mcp_list for schemas before mcp_call. Execution requires approval; metadata never grants permission."
+                : name === "files_export"
+                  ? "Copy a virtual conversation file to a relative workspace destination for grep/jq or other code tools. Source path begins runoza-files/. Requires approval. Up to 10 MiB. expectedHash=null creates a new file; use the destination hash to replace. Parent directories must already exist."
+                  : name === "skills_copy"
+                    ? "Copy one enabled skill package resource to a relative workspace destination. Supports binary assets up to 10 MiB. Parent directories must exist. expectedHash=null creates a new file; use the current destination hash to replace. Copying never executes the file and requires approval."
+                    : name === "execute"
+                      ? "Run a shell command in the selected workspace under the current approval policy. Set optional checkLabel for an actual verification command. Maximum 60 seconds; command 65536 characters. Use write_file for file contents."
+                      : name === "write_file"
+                        ? "Write UTF-8 content directly to a relative file. Up to 60000 UTF-8 bytes per chunk, 1 MiB total. expectedHash=null creates a new file; use read_file SHA-256 to replace or append. For larger content use multiple append=true chunks with the latest hash. Requires approval."
+                        : name === "read_file"
+                          ? "Read a relative workspace file and its SHA-256 for conflict-safe edits. Up to 1 MiB; returns a bounded page with nextOffset (UTF-16 characters), total size and hash. Requires approval."
+                          : "Save a relative regular workspace file as a downloadable artifact. Maximum 1 MiB. Requires approval.",
+      parameters:
+        name === "workspace_list"
           ? {
               type: "object",
-              properties: {
-                path: { type: "string", maxLength: 200 },
-                destination: { type: "string", maxLength: 200 },
-                expectedHash: {
-                  anyOf: [
-                    { type: "null" },
-                    { type: "string", pattern: "^[a-f0-9]{64}$" },
-                  ],
-                },
-              },
-              required: ["path", "destination", "expectedHash"],
+              properties: { path: { type: "string", maxLength: 200 } },
+              required: ["path"],
               additionalProperties: false,
             }
-          : name === "skills_copy"
+          : name === "edit_file"
             ? {
                 type: "object",
                 properties: {
-                  versionId: { type: "string" },
-                  path: { type: "string", maxLength: 512 },
-                  destination: { type: "string", maxLength: 512 },
-                  expectedHash: {
-                    anyOf: [
-                      { type: "null" },
-                      { type: "string", pattern: "^[a-f0-9]{64}$" },
-                    ],
-                  },
+                  path: { type: "string", maxLength: 200 },
+                  oldText: { type: "string", minLength: 1, maxLength: 60000 },
+                  newText: { type: "string", maxLength: 60000 },
+                  expectedHash: { type: "string", pattern: "^[a-f0-9]{64}$" },
                 },
-                required: ["versionId", "path", "destination", "expectedHash"],
+                required: ["path", "oldText", "newText", "expectedHash"],
                 additionalProperties: false,
               }
-            : name === "write_file"
+            : name === "workspace_search"
               ? {
                   type: "object",
                   properties: {
                     path: { type: "string", maxLength: 200 },
-                    content: { type: "string", maxLength: 60000 },
-                    expectedHash: {
-                      anyOf: [
-                        { type: "string", pattern: "^[a-f0-9]{64}$" },
-                        { type: "null" },
-                      ],
+                    query: { type: "string", minLength: 1, maxLength: 1000 },
+                    glob: { type: "string", maxLength: 200 },
+                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                    maxBytes: {
+                      type: "integer",
+                      minimum: 1024,
+                      maximum: 1048576,
                     },
-                    append: { type: "boolean" },
                   },
-                  required: ["path", "content", "expectedHash"],
+                  required: ["path", "query"],
                   additionalProperties: false,
                 }
-              : {
-                  type: "object",
-                  properties: {
-                    [name === "execute" ? "command" : "path"]: {
-                      type: "string",
-                      minLength: 1,
-                      maxLength: name === "execute" ? 65536 : 200,
+              : name.startsWith("mcp_")
+                ? {
+                    type: "object",
+                    properties: {
+                      connectionId: {
+                        type: "string",
+                      },
+                      tool: { type: "string" },
+                      offset: { type: "integer", minimum: 0 },
+                      arguments: { type: "object", additionalProperties: true },
                     },
-                    ...(name === "read_file"
-                      ? {
-                          offset: { type: "integer", minimum: 0 },
-                          limit: {
-                            type: "integer",
-                            minimum: 2,
-                            maximum: 20000,
+                    required:
+                      name === "mcp_call"
+                        ? ["connectionId", "tool", "arguments"]
+                        : ["connectionId"],
+                    additionalProperties: false,
+                  }
+                : name === "files_export"
+                  ? {
+                      type: "object",
+                      properties: {
+                        path: { type: "string", maxLength: 200 },
+                        destination: { type: "string", maxLength: 200 },
+                        expectedHash: {
+                          anyOf: [
+                            { type: "null" },
+                            { type: "string", pattern: "^[a-f0-9]{64}$" },
+                          ],
+                        },
+                      },
+                      required: ["path", "destination", "expectedHash"],
+                      additionalProperties: false,
+                    }
+                  : name === "skills_copy"
+                    ? {
+                        type: "object",
+                        properties: {
+                          versionId: { type: "string" },
+                          path: { type: "string", maxLength: 512 },
+                          destination: { type: "string", maxLength: 512 },
+                          expectedHash: {
+                            anyOf: [
+                              { type: "null" },
+                              { type: "string", pattern: "^[a-f0-9]{64}$" },
+                            ],
                           },
+                        },
+                        required: [
+                          "versionId",
+                          "path",
+                          "destination",
+                          "expectedHash",
+                        ],
+                        additionalProperties: false,
+                      }
+                    : name === "write_file"
+                      ? {
+                          type: "object",
+                          properties: {
+                            path: { type: "string", maxLength: 200 },
+                            content: { type: "string", maxLength: 60000 },
+                            expectedHash: {
+                              anyOf: [
+                                { type: "string", pattern: "^[a-f0-9]{64}$" },
+                                { type: "null" },
+                              ],
+                            },
+                            append: { type: "boolean" },
+                          },
+                          required: ["path", "content", "expectedHash"],
+                          additionalProperties: false,
                         }
-                      : {}),
-                  },
-                  required: [name === "execute" ? "command" : "path"],
-                  additionalProperties: false,
-                },
+                      : {
+                          type: "object",
+                          properties: {
+                            [name === "execute" ? "command" : "path"]: {
+                              type: "string",
+                              minLength: 1,
+                              maxLength: name === "execute" ? 65536 : 200,
+                            },
+                            ...(name === "execute"
+                              ? {
+                                  checkLabel: {
+                                    type: "string",
+                                    minLength: 1,
+                                    maxLength: 160,
+                                  },
+                                }
+                              : {}),
+                            ...(name === "read_file"
+                              ? {
+                                  offset: { type: "integer", minimum: 0 },
+                                  limit: {
+                                    type: "integer",
+                                    minimum: 2,
+                                    maximum: 20000,
+                                  },
+                                }
+                              : {}),
+                          },
+                          required: [name === "execute" ? "command" : "path"],
+                          additionalProperties: false,
+                        },
       replay: "never",
       execute: async (_toolCallId, args) =>
         inSpan(
@@ -459,7 +655,12 @@ export class PiAgentRuntime implements AgentRuntime {
                         bytes: exportFile.size,
                       },
                     })
-                  : name === "write_file"
+                  : [
+                        "write_file",
+                        "edit_file",
+                        "workspace_search",
+                        "workspace_list",
+                      ].includes(name)
                     ? JSON.stringify(args)
                     : (args as { command?: string; path?: string })[
                         name === "execute" ? "command" : "path"
@@ -468,10 +669,11 @@ export class PiAgentRuntime implements AgentRuntime {
             const a = (
               await sql<{
                 id: string;
-              }>`INSERT INTO code_actions(run_id,tool,input) VALUES (${input.id}::uuid,${name},${value}) RETURNING id`.execute(
+              }>`INSERT INTO code_actions(run_id,tool,input,check_label) VALUES (${input.id}::uuid,${name},${value},${name === "execute" ? ((args as { checkLabel?: string }).checkLabel ?? null) : null}) RETURNING id`.execute(
                 db,
               )
             ).rows[0]!;
+            const actionId = a.id;
             await input.onTool?.(a.id);
             if (!uncertainCommand)
               await attemptAutomaticApproval(
@@ -540,7 +742,10 @@ export class PiAgentRuntime implements AgentRuntime {
             };
             if (!mc) await acquire();
             await state("running");
+            let observed: Map<string, string> | undefined;
             try {
+              if (config?.structuredTools && name === "execute")
+                observed = await observeWorkspace(lease!.executor, signal);
               if (mc) {
                 const result = await runMcp(
                   db,
@@ -603,6 +808,12 @@ export class PiAgentRuntime implements AgentRuntime {
                   resource.sha256
                 )
                   throw new ExecutionError("SKILL_CHANGED");
+                await prepareCopy(
+                  actionId,
+                  resourceArgs.destination,
+                  data,
+                  resourceArgs.expectedHash,
+                );
                 await installResource(
                   lease!.executor,
                   resourceArgs.destination,
@@ -616,6 +827,15 @@ export class PiAgentRuntime implements AgentRuntime {
                     sha256: resource.sha256,
                     bytes: size,
                     copied: true,
+                    ...(config?.structuredTools
+                      ? {
+                          change: {
+                            runId: input.id,
+                            actionId,
+                            path: resourceArgs.destination,
+                          },
+                        }
+                      : {}),
                   }),
                   exitCode: 0,
                 };
@@ -628,6 +848,12 @@ export class PiAgentRuntime implements AgentRuntime {
                 const file = await files.read(a.path);
                 if (file.sha256 !== exportFile!.sha256)
                   throw new ExecutionError("FILE_CONFLICT");
+                await prepareCopy(
+                  actionId,
+                  a.destination,
+                  file.content,
+                  a.expectedHash,
+                );
                 await installResource(
                   lease!.executor,
                   a.destination,
@@ -642,6 +868,91 @@ export class PiAgentRuntime implements AgentRuntime {
                     sha256: file.sha256,
                     bytes: file.size,
                     exported: true,
+                    ...(config?.structuredTools
+                      ? {
+                          change: {
+                            runId: input.id,
+                            actionId,
+                            path: a.destination,
+                          },
+                        }
+                      : {}),
+                  }),
+                  exitCode: 0,
+                };
+              } else if (name === "workspace_list") {
+                const entries = await lease!.executor.listFiles(
+                  (args as { path: string }).path,
+                  signal,
+                );
+                r = {
+                  output: JSON.stringify({
+                    entries: entries.slice(0, 200),
+                    truncated: entries.length > 200,
+                  }),
+                  exitCode: 0,
+                };
+              } else if (name === "workspace_search") {
+                r = {
+                  output: JSON.stringify(
+                    await workspaceSearch(
+                      lease!.executor,
+                      args as SearchInput,
+                      signal,
+                    ),
+                  ),
+                  exitCode: 0,
+                };
+              } else if (name === "edit_file") {
+                const edit = args as {
+                  path: string;
+                  oldText: string;
+                  newText: string;
+                  expectedHash: string;
+                };
+                const before = await lease!.executor.readFile(
+                  edit.path,
+                  signal,
+                );
+                if (before.sha256 !== edit.expectedHash)
+                  throw new ExecutionError("FILE_CONFLICT");
+                if (before.content === null)
+                  throw new ExecutionError("FILE_EDIT_INPUT");
+                const next = Buffer.from(
+                  editContent(
+                    new TextDecoder("utf-8", {
+                      fatal: true,
+                      ignoreBOM: true,
+                    }).decode(Buffer.from(before.base64, "base64")),
+                    edit.oldText,
+                    edit.newText,
+                  ),
+                );
+                await journal.prepare(
+                  a.id,
+                  edit.path,
+                  Buffer.from(before.base64, "base64"),
+                  next,
+                );
+                await authorized("code");
+                await installResource(
+                  lease!.executor,
+                  edit.path,
+                  next,
+                  edit.expectedHash,
+                  signal,
+                );
+                await journal.finish(a.id, "completed");
+                r = {
+                  output: JSON.stringify({
+                    path: edit.path,
+                    sha256: createHash("sha256").update(next).digest("hex"),
+                    edited: true,
+                    change: {
+                      runId: input.id,
+                      actionId: a.id,
+                      path: edit.path,
+                    },
                   }),
                   exitCode: 0,
                 };
@@ -654,6 +965,26 @@ export class PiAgentRuntime implements AgentRuntime {
                 };
                 if (Buffer.byteLength(a.content) > 60000)
                   throw new ExecutionError("FILE_CHUNK_SIZE");
+                let savedHash: string | undefined;
+                if (config?.structuredTools) {
+                  const before =
+                    a.expectedHash === null
+                      ? null
+                      : await lease!.executor.readFile(a.path, signal);
+                  if (before && before.sha256 !== a.expectedHash)
+                    throw new ExecutionError("FILE_CONFLICT");
+                  const bytes = Buffer.from(a.content);
+                  const prior = before
+                    ? Buffer.from(before.base64, "base64")
+                    : null;
+                  const next =
+                    a.append && prior ? Buffer.concat([prior, bytes]) : bytes;
+                  if (next.length > 1048576)
+                    throw new ExecutionError("FILE_SIZE");
+                  savedHash = createHash("sha256").update(next).digest("hex");
+                  await journal.prepare(actionId, a.path, prior, next);
+                  await authorized("code");
+                }
                 await lease!.executor.writeFile(
                   a.path,
                   a.content,
@@ -661,9 +992,17 @@ export class PiAgentRuntime implements AgentRuntime {
                   signal,
                   a.append,
                 );
-                const file = await lease!.executor.readFile(a.path, signal);
+                await journal.finish(actionId, "completed");
+                savedHash ??= (await lease!.executor.readFile(a.path, signal))
+                  .sha256;
                 r = {
-                  output: JSON.stringify({ sha256: file.sha256, saved: true }),
+                  output: JSON.stringify({
+                    sha256: savedHash,
+                    saved: true,
+                    ...(config?.structuredTools
+                      ? { change: { runId: input.id, actionId, path: a.path } }
+                      : {}),
+                  }),
                   exitCode: 0,
                 };
               } else if (name === "read_file") {
@@ -707,6 +1046,16 @@ export class PiAgentRuntime implements AgentRuntime {
                         db,
                       );
                   },
+                );
+              await journal.finish(
+                actionId,
+                r.exitCode === 0 ? "completed" : "failed",
+              );
+              if (observed)
+                await journal.shell(
+                  a.id,
+                  observed,
+                  await observeWorkspace(lease!.executor, signal),
                 );
               let fileId: string | null = null;
               if (name === "publish_file" && r.exitCode === 0) {
@@ -754,12 +1103,17 @@ export class PiAgentRuntime implements AgentRuntime {
                 e instanceof ExecutionError &&
                 (name === "read_file" ||
                   name === "write_file" ||
+                  name === "edit_file" ||
+                  name === "workspace_search" ||
                   name === "publish_file" ||
                   name === "skills_copy" ||
                   name === "files_export") &&
                 ([
                   "FILE_PATH",
                   "FILE_RANGE",
+                  "FILE_EDIT_INPUT",
+                  "FILE_EDIT_MATCH",
+                  "FILE_SEARCH_INPUT",
                   "FILE_UNAVAILABLE",
                   "FILE_CONFLICT",
                   "FILE_CHUNK_SIZE",
@@ -768,6 +1122,8 @@ export class PiAgentRuntime implements AgentRuntime {
                   "ARTIFACT_PATH",
                 ].includes(code) ||
                   (name === "read_file" && code === "FILE_UNAVAILABLE"));
+              await journal.finish(a.id, knownFileError ? "failed" : "unknown");
+              if (observed) await journal.shell(a.id, observed, observed);
               if (commandIsUncertain || knownFileError) {
                 await authorized(capability);
                 await lease?.check();
@@ -839,12 +1195,75 @@ export class PiAgentRuntime implements AgentRuntime {
             input.onTool,
           ),
         );
+      if (initialScope.mode === "code")
+        tools.push({
+          name: "plan_update",
+          label: "plan_update",
+          description:
+            "Persist the task plan. Read expectedVersion from the current durable plan (0 if absent). Use stable step IDs and retain order. Mark blocked steps with a reason. Status is intent, not evidence of passed tests. Updates never authorize execution.",
+          parameters: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              expectedVersion: { type: "integer", minimum: 0 },
+              plan: planContentSchema,
+            },
+            required: ["expectedVersion", "plan"],
+          },
+          replay: "never",
+          execute: async (callId, args) => {
+            const scope = await authorized("code");
+            const a = args as { expectedVersion: number; plan: PlanContent };
+            try {
+              const plan = await writeRunPlan(
+                db,
+                input.id,
+                a.expectedVersion,
+                a.plan,
+                { lease: scope.lease, operationId: callId },
+              );
+              await authorized("code");
+              return {
+                content: [{ type: "text", text: JSON.stringify(plan) }],
+                details: {},
+              };
+            } catch (error) {
+              const current = await readRunPlan(db, input.id);
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({
+                      error:
+                        error instanceof Error
+                          ? error.message
+                          : "PLAN_CONFLICT",
+                      current,
+                    }),
+                  },
+                ],
+                details: {},
+                isError: true,
+              };
+            }
+          },
+        });
       // One result boundary for every tool, including metadata, files and errors.
-      const boundedTools = tools.map((tool) =>
-        limitToolResult(
+      let bookkeeping = Promise.resolve();
+      const serialize = <T>(operation: () => Promise<T>): Promise<T> => {
+        const pending = bookkeeping.then(operation);
+        bookkeeping = pending.then(
+          () => {},
+          () => {},
+        );
+        return pending;
+      };
+      const bound = (tool: AgentTool): AgentTool => {
+        const bounded = limitToolResult(
           {
             ...tool,
             execute: async (...args) => {
+              if (fatal) throw new ExecutionError(fatal);
               await authorized();
               if (++calls > maxSteps * 4) {
                 fatal = "AGENT_STEP_LIMIT";
@@ -853,6 +1272,9 @@ export class PiAgentRuntime implements AgentRuntime {
               }
               let result: Awaited<ReturnType<AgentTool["execute"]>>;
               try {
+                const scope = await authorized();
+                if (!toolAllowedInIntent(scope.intent, tool.name))
+                  throw new ExecutionError("PLAN_TOOL_DENIED");
                 result = await tool.execute(...args);
               } catch (error) {
                 if (signal.aborted || fatal) throw error;
@@ -870,20 +1292,66 @@ export class PiAgentRuntime implements AgentRuntime {
                   isError: true,
                 };
               }
-              await authorized();
-              const details = (result.details ?? {}) as Record<string, unknown>;
-              if (typeof details.actionId !== "string") {
-                const a = (
-                  await sql<{
-                    id: string;
-                  }>`INSERT INTO code_actions(run_id,tool,input,status,output) VALUES (${input.id}::uuid,${tool.name},${JSON.stringify(args[1])},${result.isError ? "failed" : "completed"},${resultText(result)}) RETURNING id`.execute(
+              return serialize(async () => {
+                await authorized();
+                const details = (result.details ?? {}) as Record<
+                  string,
+                  unknown
+                >;
+                if (typeof details.actionId !== "string") {
+                  const a = (
+                    await sql<{
+                      id: string;
+                    }>`INSERT INTO code_actions(run_id,tool,input,status,output) VALUES (${input.id}::uuid,${tool.name},${JSON.stringify(args[1])},${result.isError ? "failed" : "completed"},${resultText(result)}) RETURNING id`.execute(
+                      db,
+                    )
+                  ).rows[0]!;
+                  await input.onTool?.(a.id);
+                  result = {
+                    ...result,
+                    details: { ...details, actionId: a.id },
+                  };
+                }
+                // Child reads already participate in the ordinary loop guard.
+                // A timestamped aggregate must not reset their consecutive-failure state.
+                if (
+                  config?.loopGuard &&
+                  !["read_batch", "research_readonly"].includes(tool.name)
+                ) {
+                  const signature = createHash("sha256")
+                    .update(
+                      tool.name + stableInput(args[1]) + resultText(result),
+                    )
+                    .digest("hex");
+                  const next = loopDecision(
+                    loop,
+                    signature,
+                    result.isError === true,
+                  );
+                  loop = next;
+                  recordMetrics({ "runoza.loop_failures": next.failures });
+                  await sql`UPDATE chat_runs SET loop_guard=loop_guard || ${JSON.stringify({ tool: next })}::jsonb WHERE id=${input.id}::uuid AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
                     db,
-                  )
-                ).rows[0]!;
-                await input.onTool?.(a.id);
-                return { ...result, details: { ...details, actionId: a.id } };
-              }
-              return result;
+                  );
+                  if (next.stop) {
+                    fatal = "AGENT_LOOP_LIMIT";
+                    controller.abort();
+                    throw new ExecutionError(fatal);
+                  }
+                  if (next.warn)
+                    result = {
+                      ...result,
+                      content: [
+                        ...result.content,
+                        {
+                          type: "text",
+                          text: "Repeated identical failure. Inspect the cause, change the next action or explain the blocker. Two more identical failed attempts stop this run.",
+                        },
+                      ],
+                    };
+                }
+                return result;
+              });
             },
           },
           async (text, result) => {
@@ -910,8 +1378,63 @@ export class PiAgentRuntime implements AgentRuntime {
               return notice;
             }
           },
-        ),
-      );
+          config?.microcompaction
+            ? {
+                model: input.model,
+                maxTokens: Math.max(
+                  512,
+                  Math.min(
+                    8000,
+                    Math.floor((input.contextLimit ?? 131072) * 0.12),
+                  ),
+                ),
+              }
+            : undefined,
+        );
+        return {
+          ...bounded,
+          execute: (...args) =>
+            roundJournal
+              ? journalOperation(() =>
+                  roundJournal!.execute(args[0], tool.name, () =>
+                    bounded.execute(...args),
+                  ),
+                )
+              : bounded.execute(...args),
+        };
+      };
+      const boundedTools = tools
+        .filter((tool) => toolAllowedInIntent(initialScope.intent, tool.name))
+        .map(bound);
+      if (config?.readBatch) {
+        const batch = createReadBatchTool({
+          tools: boundedTools,
+          signal,
+          authorize: () => authorized(),
+          begin: async (args) => {
+            const scope = await authorized();
+            const action = (
+              await sql<{
+                id: string;
+              }>`INSERT INTO code_actions(run_id,tool,input,status,output) SELECT ${input.id}::uuid,'read_batch',${JSON.stringify(args)},'running','' FROM chat_runs WHERE id=${input.id}::uuid AND status='running' AND lease IS NOT DISTINCT FROM ${scope.lease}::uuid RETURNING id`.execute(
+                db,
+              )
+            ).rows[0];
+            if (!action) throw new ExecutionError("RUN_CANCELLED");
+            await input.onTool?.(action.id);
+            return {
+              id: action.id,
+              update: async (progress, status) => {
+                // Cleanup may settle after cancellation, but a replaced lease cannot write.
+                await sql`UPDATE code_actions SET output=${JSON.stringify(progress)},status=${status} WHERE id=${action.id}::uuid AND status='running' AND EXISTS(SELECT 1 FROM chat_runs r WHERE r.id=${input.id}::uuid AND r.lease IS NOT DISTINCT FROM ${scope.lease}::uuid)`.execute(
+                  db,
+                );
+              },
+            };
+          },
+        });
+        boundedTools.push(bound(batch));
+      }
       await authorized();
       await state("running");
       const model: Model<"openai-completions"> = {
@@ -933,6 +1456,57 @@ export class PiAgentRuntime implements AgentRuntime {
             : 0,
         compat: { supportsStore: false, maxTokensField: "max_tokens" },
       };
+      if (config?.research && config.modelJournal) {
+        const research = createResearchTool({
+          db,
+          runId: input.id,
+          lease: initialScope.lease,
+          model,
+          connection: input.connection,
+          instructions: input.instructions,
+          tools: boundedTools,
+          signal,
+          scope: {
+            intent: initialScope.intent,
+            mode: initialScope.mode,
+            projectId: initialScope.project_id,
+            desktopWorkspaceId: initialScope.desktop_workspace_id,
+          },
+          authorize: async () => {
+            const scope = await authorized();
+            return {
+              intent: scope.intent,
+              mode: scope.mode,
+              projectId: scope.project_id,
+              desktopWorkspaceId: scope.desktop_workspace_id,
+            };
+          },
+          notify: async (actionId) => {
+            await input.onTool?.(actionId);
+          },
+          onAttempt: () => {
+            measured.modelCalls++;
+          },
+          onUsage: async (u) => {
+            if (u.totalTokens > 0) {
+              measured.reported = true;
+              measured.input += u.input;
+              measured.output += u.output;
+              measured.cacheRead += u.cacheRead;
+              measured.cacheWrite += u.cacheWrite;
+              measured.totalTokens += u.totalTokens;
+            }
+            await sql`UPDATE chat_runs SET usage=${JSON.stringify(measured)}::jsonb WHERE id=${input.id}::uuid AND status='running' AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
+              db,
+            );
+          },
+          abortParent: (code) => {
+            fatal = code;
+            controller.abort(new ExecutionError(code));
+          },
+        });
+        boundedTools.push(bound(research));
+      }
       const usage = {
         input: 0,
         output: 0,
@@ -957,13 +1531,71 @@ export class PiAgentRuntime implements AgentRuntime {
                 timestamp: Date.now(),
               },
         );
+      roundJournal = config?.modelJournal
+        ? modelJournal(db, {
+            runId: input.id,
+            lease: initialScope.lease,
+            authorize: authorized,
+            configuration: {
+              version: 1,
+              connections,
+              flags: initialScope.flags,
+              planTarget: initialScope.plan_target,
+              instructions: input.instructions,
+              systemPrompt,
+              model,
+              reasoning: input.reasoning ?? {},
+              config,
+              provider: {
+                kind: input.connection.kind,
+                url: input.connection.base_url,
+              },
+              target: {
+                desktop: initialScope.desktop_workspace_id,
+                project: initialScope.project_id,
+                intent: initialScope.intent,
+              },
+              tools: boundedTools.map(({ name, description, parameters }) => ({
+                name,
+                description,
+                parameters,
+              })),
+            },
+          })
+        : undefined;
+      const recovered = await roundJournal?.restore();
+      if (recovered && recovered.blocked !== undefined) {
+        await roundJournal?.blocked(recovered.blocked);
+        throw new ExecutionError(recovered.blocked);
+      }
       let turns = 0,
-        text = "";
+        text = recovered?.text ?? "";
+      thoughts = recovered?.reasoning ?? "";
+      if (recovered) {
+        for (const { usage: u } of recovered.attempts) {
+          measured.modelCalls++;
+          if (!u) continue;
+          measured.input += u.input ?? 0;
+          measured.output += u.output ?? 0;
+          measured.totalTokens += u.totalTokens ?? 0;
+          measured.lastInputTokens = u.input ?? 0;
+          measured.reported ||= u.totalTokens > 0;
+        }
+        measured.cacheRead = recovered.cacheRead;
+        measured.cacheWrite = recovered.cacheWrite;
+        measured.lastInputTokens =
+          recovered.lastInputTokens ?? measured.lastInputTokens;
+        if (recovered.final) {
+          retain = true;
+          return { usage: measured };
+        }
+        if (text.trim() && !text.endsWith("\n\n")) text += "\n\n";
+      }
       const agent = new Agent({
         initialState: {
           model,
           tools: boundedTools,
-          systemPrompt: AGENT_SYSTEM_PROMPT + input.instructions,
+          systemPrompt,
         },
         toolExecution: "sequential",
         streamFn: (m, c, o) => {
@@ -971,40 +1603,55 @@ export class PiAgentRuntime implements AgentRuntime {
             "runoza.provider_kind": input.connection.kind,
             "runoza.model": input.model,
           });
-          const stream = streamSimple(m as Model<"openai-completions">, c, {
-            ...o,
-            onPayload: (payload) => {
-              const body = {
-                ...(payload as Record<string, unknown>),
-                ...input.reasoning,
-              };
-              if (input.reasoning?.max_tokens === undefined)
-                delete body.max_tokens;
-              delete body.max_completion_tokens;
-              if (
-                input.contextLimit &&
-                !contextBudget(
-                  input.model,
-                  JSON.stringify({
-                    messages: body.messages,
-                    tools: body.tools,
-                  }),
-                  input.contextLimit,
-                  Number(input.reasoning?.max_tokens) || undefined,
-                ).fits
-              )
-                throw new ExecutionError("CONTEXT_LIMIT");
-              return body;
+          const stream = managedStream(
+            m as Model<"openai-completions">,
+            c,
+            {
+              ...o,
+              onPayload: (payload) => {
+                const body = {
+                  ...(payload as Record<string, unknown>),
+                  ...input.reasoning,
+                };
+                if (input.reasoning?.max_tokens === undefined)
+                  delete body.max_tokens;
+                delete body.max_completion_tokens;
+                if (
+                  input.contextLimit &&
+                  !contextBudget(
+                    input.model,
+                    JSON.stringify({
+                      messages: body.messages,
+                      tools: body.tools,
+                    }),
+                    input.contextLimit,
+                    Number(input.reasoning?.max_tokens) || undefined,
+                  ).fits
+                )
+                  throw new ExecutionError("CONTEXT_LIMIT");
+                return body;
+              },
+              apiKey: input.connection.key || "local-no-key",
+              maxTokens:
+                typeof input.reasoning?.max_tokens === "number"
+                  ? input.reasoning.max_tokens
+                  : 0,
+              // Pi retries connection/HTTP failures only before receiving the stream.
+              maxRetries: 1,
+              timeoutMs: 30000,
             },
-            apiKey: input.connection.key || "local-no-key",
-            maxTokens:
-              typeof input.reasoning?.max_tokens === "number"
-                ? input.reasoning.max_tokens
-                : 0,
-            // Pi retries connection/HTTP failures only before receiving the stream.
-            maxRetries: 1,
-            timeoutMs: 30000,
-          });
+            {
+              hooks: {
+                ...generation,
+                begin: async (input) => {
+                  const id = await generation.begin(input);
+                  measured.modelCalls++;
+                  return id;
+                },
+              },
+              signal,
+            },
+          );
           void stream.result().then(
             (result) => {
               if (
@@ -1023,14 +1670,34 @@ export class PiAgentRuntime implements AgentRuntime {
         },
         prepareRequest: async ({ context }) => {
           await authorized();
+          if (fatal) throw new ExecutionError(fatal);
           if (++turns > maxSteps) throw new ExecutionError("AGENT_STEP_LIMIT");
           if (input.prepareContext) {
-            const messages = await input.prepareContext(
-              context.messages as ContextMessage[],
-            );
+            let messages: ContextMessage[];
+            try {
+              messages = await input.prepareContext(
+                context.messages as ContextMessage[],
+              );
+            } catch (error) {
+              if (error instanceof ProviderError) fatal = error.code;
+              throw error;
+            }
             await authorized();
+            const budget = contextBudget(
+              input.model,
+              JSON.stringify(messages),
+              input.contextLimit,
+              Number(input.reasoning?.max_tokens) || undefined,
+            );
+            await sql`UPDATE chat_runs SET context_estimate=${JSON.stringify({ tokens: contextTokens(input.model, messages), inputBudget: budget.inputBudget, contextTokens: budget.contextTokens, method: "estimated" })}::jsonb WHERE id=${input.id}::uuid AND status='running' AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
+              db,
+            );
+            await journalOperation(async () => roundJournal?.begin(messages));
             return { context: { ...context, messages } };
           }
+          await journalOperation(async () =>
+            roundJournal?.begin(context.messages),
+          );
         },
       });
       const stop = () => agent.abort();
@@ -1056,14 +1723,23 @@ export class PiAgentRuntime implements AgentRuntime {
         if (e.type === "message_end" && e.message.role === "assistant") {
           if (e.message.stopReason === "length") fatal = "OUTPUT_LIMIT";
           const u = e.message.usage;
-          measured.modelCalls++;
           if (u.totalTokens > 0) {
             measured.reported = true;
             measured.input += u.input;
             measured.output += u.output;
+            measured.cacheRead += u.cacheRead;
+            measured.cacheWrite += u.cacheWrite;
             measured.totalTokens += u.totalTokens;
             measured.lastInputTokens = u.input + u.cacheRead + u.cacheWrite;
           }
+          await sql`UPDATE chat_runs SET usage=${JSON.stringify({ ...measured, cacheRead: measured.cacheRead || undefined, cacheWrite: measured.cacheWrite || undefined })}::jsonb WHERE id=${input.id}::uuid AND status='running' AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
+            db,
+          );
+          recordMetrics({
+            "runoza.input_tokens": measured.input,
+            "runoza.output_tokens": measured.output,
+            "runoza.model_calls": measured.modelCalls,
+          });
         }
         if (
           e.type === "message_update" &&
@@ -1084,9 +1760,26 @@ export class PiAgentRuntime implements AgentRuntime {
         ) {
           if (text.trim() && !text.endsWith("\n\n")) text += "\n\n";
         }
+        if (e.type === "message_end" && roundJournal) {
+          if (e.message.role === "assistant")
+            await journalOperation(() =>
+              roundJournal!.assistant(
+                e.message as import("@earendil-works/pi-ai").AssistantMessage,
+              ),
+            );
+          if (e.message.role === "toolResult")
+            await journalOperation(() =>
+              roundJournal!.result(
+                e.message as import("@earendil-works/pi-ai").ToolResultMessage,
+              ),
+            );
+        }
       });
       try {
-        await agent.prompt(messages);
+        if (recovered) {
+          agent.state.messages = recovered.messages;
+          await agent.continue();
+        } else await agent.prompt(messages);
         if (fatal) throw new ExecutionError(fatal);
         signal.throwIfAborted();
         if (agent.state.errorMessage)
@@ -1100,15 +1793,25 @@ export class PiAgentRuntime implements AgentRuntime {
           true,
         );
         retain = !uncertainCommand;
-        return { usage: measured };
+        return {
+          usage: {
+            ...measured,
+            cacheRead: measured.cacheRead || undefined,
+            cacheWrite: measured.cacheWrite || undefined,
+          },
+        };
       } finally {
         signal.removeEventListener("abort", stop);
       }
     } catch (e) {
+      if (fatal) throw new ExecutionError(fatal);
       if (signal.aborted && !input.signal.aborted && !fatal)
         throw new ExecutionError("AGENT_TIMEOUT");
       throw e;
     } finally {
+      await sql`UPDATE chat_runs SET usage=${JSON.stringify({ ...measured, cacheRead: measured.cacheRead || undefined, cacheWrite: measured.cacheWrite || undefined })}::jsonb WHERE id=${input.id}::uuid AND status='running' AND (model_recovery_count=0 OR ${measured.modelCalls}>0) AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`
+        .execute(db)
+        .catch(() => {});
       if (lease?.executor.mcpRequest)
         await Promise.allSettled(
           [...stdioSessions].map(([sessionId, { command, configuration }]) =>
@@ -1130,11 +1833,16 @@ export class PiAgentRuntime implements AgentRuntime {
         [...workspaceMcpSessions.values()].map((client) => client.close()),
       );
       workspaceMcpSessions.clear();
+      if (lease && roundJournal && !retain && !uncertainCommand)
+        retain = await roundJournal.retainWorkspace().catch(() => false);
       await lease?.release(retain);
-      await sql`UPDATE code_actions SET status=CASE WHEN status='running' THEN 'unknown' ELSE 'cancelled' END WHERE run_id=${input.id}::uuid AND status IN ('pending','approved','running')`.execute(
+      await sql`UPDATE research_runs SET status=${input.signal.aborted ? "cancelled" : "interrupted"},error_code=${fatal ?? (input.signal.aborted ? "RUN_CANCELLED" : "RESEARCH_INTERRUPTED")},finished_at=now() WHERE parent_run_id=${input.id}::uuid AND parent_lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid AND status='running' AND EXISTS(SELECT 1 FROM chat_runs WHERE id=${input.id}::uuid AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid)`.execute(
         db,
       );
-      await sql`UPDATE chat_runs SET code_state='released' WHERE id=${input.id}::uuid`.execute(
+      await sql`UPDATE code_actions SET status=CASE WHEN status='running' THEN 'unknown' ELSE 'cancelled' END WHERE run_id=${input.id}::uuid AND status IN ('pending','approved','running') AND EXISTS(SELECT 1 FROM chat_runs WHERE id=${input.id}::uuid AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid)`.execute(
+        db,
+      );
+      await sql`UPDATE chat_runs SET code_state='released' WHERE id=${input.id}::uuid AND lease IS NOT DISTINCT FROM ${runLease ?? null}::uuid`.execute(
         db,
       );
     }

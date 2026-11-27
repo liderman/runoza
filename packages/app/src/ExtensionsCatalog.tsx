@@ -1,3 +1,4 @@
+import { ExtensionDetails } from "./ExtensionDetails.tsx";
 import { ExtensionImport } from "./ExtensionImport.tsx";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -254,21 +255,7 @@ export function ExtensionsCatalog({
                   {x.description && (
                     <Text color="secondary">{x.description}</Text>
                   )}
-                  {!x.available && (
-                    <Text color="warning">
-                      {x.reason === "device_workspace_required"
-                        ? s(
-                            "Нужна рабочая папка этого устройства",
-                            "Requires a workspace on this device",
-                          )
-                        : x.reason === "device_offline"
-                          ? s("Устройство отключено", "Device offline")
-                          : s(
-                              "Запрещено администратором",
-                              "Disabled by administrator",
-                            )}
-                    </Text>
-                  )}
+                  <ExtensionDetails item={x} locale={locale} />
                   {x.enabled && x.available && (
                     <Flex gap="spacing-3" alignItems="center">
                       <Button

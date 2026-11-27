@@ -1,3 +1,5 @@
+export * from "./generation.ts";
+export * from "./run-plan.ts";
 export const API_VERSION = "1";
 export const statusSchema = {
   type: "object",
@@ -61,3 +63,14 @@ export {
 } from "./skill-packages.ts";
 
 export * from "./permission-pattern.ts";
+
+export * from "./verification.ts";
+
+export * from "./revision-references.ts";
+
+export * from "./conversation-queue.ts";
+
+export * from "./read-batch.ts";
+
+export * from "./research.ts";
+export * from "./rollback-preview.ts";

@@ -1,4 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { countContextTokens } from "@runoza/providers";
 import { ExecutionError } from "@runoza/execution";
 export const TOOL_RESULT_CHARS = 50_000;
 export const FILE_PAGE_CHARS = 20_000;
@@ -40,13 +41,21 @@ export function resultText(result: ToolResult) {
 export function limitToolResult(
   tool: AgentTool,
   save: (text: string, result: ToolResult) => Promise<string>,
+  budget?: { model: string; maxTokens: number },
 ): AgentTool {
   return {
     ...tool,
     execute: async (...args) => {
       const result = await tool.execute(...args);
       const text = resultText(result);
-      if (text.length <= TOOL_RESULT_CHARS) return result;
+      if (
+        text.length <= TOOL_RESULT_CHARS &&
+        Buffer.byteLength(text) <= 200000 &&
+        (!budget ||
+          countContextTokens(JSON.stringify(text), budget.model) <=
+            budget.maxTokens)
+      )
+        return result;
       const notice = await save(text, result);
       if (notice.length > TOOL_RESULT_CHARS) throw Error("TOOL_RESULT_LIMIT");
       return { ...result, content: [{ type: "text", text: notice }] };

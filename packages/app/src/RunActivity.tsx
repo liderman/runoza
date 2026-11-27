@@ -1,120 +1,133 @@
+import { ResearchActivity } from "./ResearchActivity.tsx";
+import { ModelBoundary } from "./ModelBoundary.tsx";
+import { RunExtensions } from "./RunExtensions.tsx";
+import { GenerationActivity } from "./GenerationActivity.tsx";
+import { RunPlanPanel } from "./RunPlan.tsx";
+import { RunChangesButton } from "./RunChanges.tsx";
 import { useEffect, useState } from "react";
 import { Disclosure, Flex, Text } from "@gravity-ui/uikit";
 import type { ChatRun } from "@runoza/contracts";
 import type { IdentityClient } from "@runoza/api-client";
 import { CodeActivity } from "./CodeActivity.tsx";
 import { chatText } from "./chat-locales.ts";
+import {
+  revealRunEvent,
+  runAnchor,
+  runDuration,
+  runPresentation,
+} from "./run-presentation.ts";
+import { useRunActivity } from "./useRunActivity.ts";
 export function RunActivity({
   run,
   reasoning,
   api,
   locale,
   ordered = false,
+  targetLabel,
 }: {
   run: ChatRun;
   reasoning?: string;
   api: IdentityClient;
   locale: "ru" | "en";
   ordered?: boolean;
+  targetLabel?: string;
 }) {
-  const active = ["queued", "running"].includes(run.status),
-    [expanded, setExpanded] = useState(active),
-    [now, setNow] = useState(Date.now());
+  const activity = useRunActivity(api, run, run.mode === "code");
+  const model = runPresentation(run, locale, activity.data);
+  const active = model.active;
+  const [expanded, setExpanded] = useState(active);
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    setExpanded(active);
+    const anchor = document.getElementById(runAnchor(run.id));
+    const reveal = () => setExpanded(true);
+    anchor?.addEventListener(revealRunEvent, reveal);
+    return () => anchor?.removeEventListener(revealRunEvent, reveal);
+  }, [run.id]);
+  useEffect(() => {
     if (!active) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [active]);
-  const ru = locale === "ru",
-    seconds = run.created_at
-      ? Math.max(
-          0,
-          Math.round(
-            ((run.finished_at ? new Date(run.finished_at).getTime() : now) -
-              new Date(run.created_at).getTime()) /
-              1000,
-          ),
-        )
-      : null;
-  const duration =
-    seconds === null
-      ? ""
-      : seconds < 60
-        ? `${seconds} ${ru ? "с" : "s"}`
-        : `${Math.floor(seconds / 60)} ${ru ? "мин" : "min"} ${seconds % 60} ${ru ? "с" : "s"}`;
-  const label =
-    active && run.compaction_state === "running"
-      ? ru
-        ? "Сжимает контекст"
-        : "Compacting context"
-      : run.status === "queued"
-        ? ru
-          ? "В очереди"
-          : "Queued"
-        : run.status === "running" && run.code_state === "waiting_approval"
-          ? ru
-            ? "Ждёт разрешения"
-            : "Awaiting approval"
-          : active
-            ? ru
-              ? "Выполняется"
-              : "Working"
-            : run.status === "completed"
-              ? ru
-                ? "Выполнено за"
-                : "Completed in"
-              : run.status === "cancelled"
-                ? ru
-                  ? "Остановлено через"
-                  : "Stopped after"
-                : ru
-                  ? "Прервано через"
-                  : "Interrupted after";
-  const summary = `${label} ${duration}`;
+  const ru = locale === "ru";
+  const summary = [model.label, runDuration(run, locale, now)]
+    .filter(Boolean)
+    .join(" · ");
   if (
     (ordered || !reasoning?.trim()) &&
     (!run.error_code || run.dismissed) &&
     (ordered || run.mode !== "code") &&
-    !run.skill_versions?.length
+    !run.skill_versions?.length &&
+    !run.mcp_connections?.length &&
+    !run.extensions?.skills.length &&
+    !run.extensions?.mcp.length
   )
     return (
-      <Text variant="caption-2" color="secondary">
-        {summary}
-      </Text>
+      <div id={runAnchor(run.id)} tabIndex={-1} className="run-history-anchor">
+        <GenerationActivity api={api} run={run} locale={locale} />
+        <ModelBoundary run={run} locale={locale} />
+        {run.coding_config?.research && run.coding_config.modelJournal && (
+          <ResearchActivity api={api} run={run} locale={locale} />
+        )}
+        <Text variant="caption-2" color={model.tone}>
+          {summary}
+        </Text>
+        {run.mode === "code" && (
+          <>
+            <RunChangesButton api={api} run={run} locale={locale} />
+            <RunPlanPanel api={api} run={run} locale={locale} />
+          </>
+        )}
+      </div>
     );
   return (
-    <Disclosure summary={summary} expanded={expanded} onUpdate={setExpanded}>
-      <Flex direction="column" gap="spacing-3" paddingBlock="spacing-3">
-        {Boolean(run.compaction_count) && (
-          <Text color="secondary">
-            {ru ? "Сжатий контекста: " : "Context compactions: "}
-            {run.compaction_count}
-          </Text>
-        )}
-        {Boolean(run.skill_versions?.length) && (
-          <Text color="secondary">
-            {ru ? "Скиллы: " : "Skills: "}
-            {run
-              .skill_versions!.map((s) => s.name + " · v" + s.version)
-              .join(", ")}
-          </Text>
-        )}
-        {run.error_code && !run.dismissed && (
-          <Text color="warning">{chatText(locale)(run.error_code)}</Text>
-        )}
-        {!ordered && reasoning?.trim() && (
-          <Disclosure
-            summary={ru ? "Рассуждения" : "Reasoning"}
-            defaultExpanded={active}
-          >
-            <pre className="reasoning-text">{reasoning}</pre>
-          </Disclosure>
-        )}
-        {!ordered && run.mode === "code" && (
-          <CodeActivity api={api} run={run} locale={locale} />
-        )}
-      </Flex>
-    </Disclosure>
+    <div id={runAnchor(run.id)} tabIndex={-1} className="run-history-anchor">
+      <GenerationActivity api={api} run={run} locale={locale} />
+      <ModelBoundary run={run} locale={locale} />
+      {run.coding_config?.research && run.coding_config.modelJournal && (
+        <ResearchActivity api={api} run={run} locale={locale} />
+      )}
+      {run.error_code && !run.dismissed && (
+        <Text as="div" variant="caption-2" color="danger">
+          {chatText(locale)(run.error_code)}
+        </Text>
+      )}
+      {run.mode === "code" && (
+        <>
+          <RunChangesButton api={api} run={run} locale={locale} />
+          <RunPlanPanel api={api} run={run} locale={locale} />
+        </>
+      )}
+      <Disclosure
+        summary={<Text color={model.tone}>{summary}</Text>}
+        expanded={expanded}
+        onUpdate={setExpanded}
+      >
+        <Flex direction="column" gap="spacing-3" paddingBlock="spacing-3">
+          {Boolean(run.compaction_count) && (
+            <Text color="secondary">
+              {ru ? "Сжатий контекста: " : "Context compactions: "}
+              {run.compaction_count}
+            </Text>
+          )}
+          <RunExtensions run={run} locale={locale} />
+          {!ordered && reasoning?.trim() && (
+            <Disclosure
+              summary={ru ? "Рассуждения" : "Reasoning"}
+              defaultExpanded={active}
+            >
+              <pre className="reasoning-text">{reasoning}</pre>
+            </Disclosure>
+          )}
+          {!ordered && run.mode === "code" && (
+            <CodeActivity
+              api={api}
+              run={run}
+              locale={locale}
+              targetLabel={targetLabel}
+            />
+          )}
+        </Flex>
+      </Disclosure>
+    </div>
   );
 }

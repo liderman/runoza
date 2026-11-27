@@ -1,3 +1,9 @@
+import {
+  managedStream,
+  generationError,
+  type GenerationControl,
+} from "./recovery.ts";
+export * from "./recovery.ts";
 export * from "./compaction.ts";
 export {
   contextLimits,
@@ -19,10 +25,11 @@ import {
   type Model,
   type Message,
 } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 // Pi exposes SDK errors as text. Only classify known connection failures;
 // never send raw provider messages (which can contain request data) to clients.
 export function providerFailureCode(message = "") {
+  const recoveryCode = generationError(message);
+  if (recoveryCode !== "PROVIDER_UNAVAILABLE") return recoveryCode;
   if (message.includes("CONTEXT_LIMIT")) return "CONTEXT_LIMIT";
   return /connection error|connection timed out|request timed out|connect timeout|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT/i.test(
     message,
@@ -154,6 +161,7 @@ async function* generateInternal(
   reasoning: Record<string, unknown> = {},
   contextLimit?: number | null,
   contextMessages?: Message[],
+  generation?: GenerationControl,
 ) {
   const model: Model<"openai-completions"> = {
     id: modelId,
@@ -194,7 +202,7 @@ async function* generateInternal(
           },
     );
   let done = false;
-  for await (const e of streamSimple(
+  for await (const e of managedStream(
     model,
     normalizeContext({ messages, systemPrompt }),
     {
@@ -223,6 +231,7 @@ async function* generateInternal(
       timeoutMs: 30000,
       signal,
     },
+    generation,
   )) {
     if (e.type === "thinking_delta")
       yield { type: "thinking" as const, text: e.delta };
@@ -270,3 +279,5 @@ export async function* generate(...args: Parameters<typeof generateInternal>) {
     span.end();
   }
 }
+
+export { microcompact, type SavedResult } from "./microcompaction.ts";

@@ -257,7 +257,7 @@ export async function registerResources(
       const u = await ctx.identity(req);
       if (req.query.projectId) await projectAccess(db, u, req.query.projectId);
       const rows = (
-        await sql<StoredFile>`SELECT * FROM files WHERE organization_id=${u.organization_id}::uuid AND status!='deleting' AND ${req.query.projectId ? sql`project_id=${req.query.projectId}::uuid` : sql`project_id IS NULL AND owner_id=${u.id}::uuid`} ORDER BY created_at DESC LIMIT 200`.execute(
+        await sql<StoredFile>`SELECT * FROM files WHERE organization_id=${u.organization_id}::uuid AND status!='deleting' AND NOT is_revision AND ${req.query.projectId ? sql`project_id=${req.query.projectId}::uuid` : sql`project_id IS NULL AND owner_id=${u.id}::uuid`} ORDER BY created_at DESC LIMIT 200`.execute(
           db,
         )
       ).rows;
@@ -517,7 +517,7 @@ export async function registerResources(
       let fileCursor = "00000000-0000-0000-0000-000000000000";
       while (true) {
         const files = (
-          await sql<StoredFile>`SELECT f.* FROM files f LEFT JOIN projects p ON p.id=f.project_id LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=${u.id}::uuid WHERE f.organization_id=${u.organization_id}::uuid AND ((f.project_id IS NULL AND f.owner_id=${u.id}::uuid) OR p.owner_id=${u.id}::uuid OR m.user_id IS NOT NULL) AND f.status='ready' AND f.id>${fileCursor}::uuid ORDER BY f.id LIMIT 100`.execute(
+          await sql<StoredFile>`SELECT f.* FROM files f LEFT JOIN projects p ON p.id=f.project_id LEFT JOIN project_members m ON m.project_id=p.id AND m.user_id=${u.id}::uuid WHERE f.organization_id=${u.organization_id}::uuid AND ((f.project_id IS NULL AND f.owner_id=${u.id}::uuid) OR p.owner_id=${u.id}::uuid OR m.user_id IS NOT NULL) AND f.status='ready' AND NOT f.is_revision AND f.id>${fileCursor}::uuid ORDER BY f.id LIMIT 100`.execute(
             db,
           )
         ).rows;

@@ -1,3 +1,5 @@
+import { RunChangesButton } from "./RunChanges.tsx";
+import type { ChatRun } from "@runoza/contracts";
 import { useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -161,12 +163,14 @@ export function CodeWorkspace({
   api,
   conversationId,
   guardKeyRef,
+  reviewRun,
   locale,
   onClose,
 }: {
   api: IdentityClient;
   conversationId: string;
   guardKeyRef?: { current: object | undefined };
+  reviewRun?: ChatRun;
   locale: "ru" | "en";
   onClose: () => void;
 }) {
@@ -351,6 +355,9 @@ export function CodeWorkspace({
                   "After inactivity the environment stops; files are kept.",
                 )}
               </Text>
+            )}
+            {reviewRun && (
+              <RunChangesButton api={api} run={reviewRun} locale={locale} />
             )}
             {error && <Alert theme="danger" title={error} />}
             {snapshot?.state === "offline" && (

@@ -431,7 +431,7 @@ export async function registerAuth(
   });
   await registerOidc(app, context);
   await registerDesktop(app, context);
-  await registerChat(app, context);
+  await registerChat(app, context, storage);
   await registerExtensions(app, context);
   await registerExtensionCatalog(app, context, storage);
   await registerSchedules(app, context);

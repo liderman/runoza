@@ -1,3 +1,6 @@
+@import "./run-changes.css";
+@import "./agent-work.css";
+
 /* Gravity generator export. System fonts only; see docs/design/theme.md. */
 
 .g-root {

@@ -1,3 +1,4 @@
+import type { GenerationHooks } from "./recovery.ts";
 import type { Message } from "@earendil-works/pi-ai";
 import { contextLimits, countContextTokens } from "./context-budget.ts";
 import { generate, ProviderError } from "./index.ts";
@@ -171,6 +172,7 @@ export function summaryWriter(
   model: string,
   contextLimit: number,
   reasoning: Record<string, unknown> = {},
+  generation?: GenerationHooks,
 ): SummaryWriter {
   return async (text, maxOutputTokens, signal) => {
     let summary = "",
@@ -202,6 +204,10 @@ export function summaryWriter(
       COMPACTION_PROMPT,
       config,
       contextLimit,
+      undefined,
+      generation
+        ? { hooks: generation, signal, kind: "summary", recover: false }
+        : undefined,
     )) {
       if (e.type === "delta") summary += e.text;
       if (e.type === "done") {

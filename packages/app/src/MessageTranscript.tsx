@@ -1,4 +1,11 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { ReadBatchActivity } from "./ReadBatchActivity.tsx";
+import {
+  createContext,
+  useContext,
+  useMemo,
+  memo,
+  type ReactNode,
+} from "react";
 import type { IdentityClient } from "@runoza/api-client";
 import type { ChatMessage, ChatRun, CodeAction } from "@runoza/contracts";
 import { ToolMessage, ThinkingMessageGroup } from "@gravity-ui/aikit";
@@ -8,66 +15,116 @@ import type {
   MessageRendererRegistry,
 } from "@gravity-ui/aikit";
 import { CodeActivity, codeActionLabel } from "./CodeActivity.tsx";
+import { actionAnchor } from "./run-presentation.ts";
+import { ActionVerification } from "./ActionVerification.tsx";
 export type ActionPart = TMessageContent<
   "runoza-tool",
   { runId?: string; actionId: string; snapshot?: CodeAction }
 >;
 const Context = createContext<{
   api: IdentityClient;
-  runs: ChatRun[];
+  runs: ReadonlyMap<string, ChatRun>;
   locale: "ru" | "en";
+  targetLabel?: string;
 } | null>(null);
 export function TranscriptProvider({
   children,
-  ...value
+  api,
+  runs,
+  locale,
+  targetLabel,
 }: {
   children: ReactNode;
   api: IdentityClient;
   runs: ChatRun[];
   locale: "ru" | "en";
+  targetLabel?: string;
 }) {
+  const indexed = useMemo(
+    () => new Map(runs.map((run) => [run.id, run])),
+    [runs],
+  );
+  const value = useMemo(
+    () => ({ api, runs: indexed, locale, targetLabel }),
+    [api, indexed, locale, targetLabel],
+  );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }
 function ToolPart({ part }: { part: TMessageContent }) {
   const context = useContext(Context);
   const data = part.data as ActionPart["data"];
-  const run = context?.runs.find((r) => r.id === data.runId);
+  const run = data.runId ? context?.runs.get(data.runId) : undefined;
+  return (
+    <ToolPartBody
+      data={data}
+      run={run}
+      api={context?.api}
+      locale={context?.locale ?? "en"}
+      targetLabel={context?.targetLabel}
+    />
+  );
+}
+const ToolPartBody = memo(function ToolPartBody({
+  data,
+  run,
+  api,
+  locale,
+  targetLabel,
+}: {
+  data: ActionPart["data"];
+  run?: ChatRun;
+  api?: IdentityClient;
+  locale: "en" | "ru";
+  targetLabel?: string;
+}) {
   if (data.snapshot)
     return (
-      <ToolMessage
-        view="compact"
-        toolName={codeActionLabel(data.snapshot.tool, context?.locale ?? "en")}
-        secondaryText={
-          data.snapshot.status === "completed"
-            ? codeActionLabel("completed", context?.locale ?? "en")
-            : undefined
-        }
-        status={
-          data.snapshot.status === "completed"
-            ? "success"
-            : data.snapshot.status === "failed"
-              ? "error"
-              : "cancelled"
-        }
-        bodyContent={
-          <div className="stack">
-            <pre className="code-output">{data.snapshot.input}</pre>
-            {data.snapshot.output && (
-              <pre className="code-output">{data.snapshot.output}</pre>
-            )}
-          </div>
-        }
-      />
+      <div
+        id={actionAnchor(data.snapshot.id)}
+        tabIndex={-1}
+        className="run-action-anchor"
+      >
+        <ToolMessage
+          view="compact"
+          toolName={codeActionLabel(data.snapshot.tool, locale)}
+          secondaryText={codeActionLabel(data.snapshot.status, locale)}
+          status={
+            data.snapshot.status === "completed"
+              ? "success"
+              : ["failed", "unknown"].includes(data.snapshot.status)
+                ? "error"
+                : "cancelled"
+          }
+          bodyContent={
+            <div className="stack">
+              <pre className="code-output">{data.snapshot.input}</pre>
+              {data.snapshot.tool === "read_batch" && (
+                <ReadBatchActivity
+                  output={data.snapshot.output}
+                  status={data.snapshot.status}
+                  locale={locale}
+                  label={(name) => codeActionLabel(name, locale)}
+                />
+              )}
+              {data.snapshot.output && data.snapshot.tool !== "read_batch" && (
+                <pre className="code-output">{data.snapshot.output}</pre>
+              )}
+            </div>
+          }
+        />
+        <ActionVerification action={data.snapshot} locale={locale} />
+      </div>
     );
-  return context && run ? (
+  return api && run ? (
     <CodeActivity
-      api={context.api}
+      api={api}
       run={run}
-      locale={context.locale}
+      locale={locale}
       actionId={data.actionId}
+      targetLabel={targetLabel}
     />
   ) : null;
-}
+});
 function ThoughtPart({ part }: { part: TMessageContent }) {
   const data = part.data as {
     content: string | string[];

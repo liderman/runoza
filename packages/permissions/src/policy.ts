@@ -23,6 +23,17 @@ export function eligibleForFullAccess(tool: string, input: string) {
   }
 }
 export function eligibleForArbiter(tool: string, input: string) {
+  if (tool === "workspace_list") {
+    try {
+      const a = JSON.parse(input);
+      return (
+        typeof a.path === "string" &&
+        (a.path === "" || safeRelativePath(a.path))
+      );
+    } catch {
+      return false;
+    }
+  }
   if (tool === "read_file") return safeRelativePath(input);
   if (tool === "files_export") {
     try {
@@ -33,6 +44,35 @@ export function eligibleForArbiter(tool: string, input: string) {
         safeRelativePath(a.path) &&
         safeRelativePath(a.destination) &&
         (a.expectedHash === null || /^[a-f0-9]{64}$/.test(a.expectedHash))
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (tool === "workspace_search") {
+    try {
+      const a = JSON.parse(input);
+      return (
+        (a.path === "" || safeRelativePath(a.path)) &&
+        typeof a.query === "string" &&
+        a.query.length > 0 &&
+        a.query.length <= 1000
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (tool === "edit_file") {
+    try {
+      const a = JSON.parse(input);
+      return (
+        safeRelativePath(a.path) &&
+        /^[a-f0-9]{64}$/.test(a.expectedHash) &&
+        typeof a.oldText === "string" &&
+        a.oldText.length > 0 &&
+        Buffer.byteLength(a.oldText) <= 60000 &&
+        typeof a.newText === "string" &&
+        Buffer.byteLength(a.newText) <= 60000
       );
     } catch {
       return false;

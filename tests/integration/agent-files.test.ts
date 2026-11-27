@@ -221,6 +221,10 @@ test(
         ).rows[0]!.id;
       const alice = await user(),
         bob = await user();
+      for (const id of [alice, bob])
+        await sql`INSERT INTO memberships(organization_id,user_id,role) VALUES (${org}::uuid,${id}::uuid,'member')`.execute(
+          db,
+        );
       const provider = (
         await sql<{
           id: string;

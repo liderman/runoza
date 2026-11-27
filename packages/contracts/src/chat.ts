@@ -16,6 +16,7 @@ export interface Conversation {
   updated_at: string;
 }
 export interface ChatMessage {
+  revision_references?: import("./revision-references.ts").RevisionReference[];
   parts?: MessagePart[] | null;
   reasoning?: string;
   id: string;
@@ -28,7 +29,40 @@ export interface ChatMessage {
   content: string;
   created_at: string;
 }
+export interface ContextEstimate {
+  tokens: number;
+  inputBudget: number;
+  contextTokens: number;
+  method: "estimated";
+}
+export interface CodingConfig {
+  research?: boolean;
+  modelJournal?: boolean;
+  readBatch?: boolean;
+  promptVersion: string;
+  structuredTools: boolean;
+  microcompaction: boolean;
+  loopGuard: boolean;
+}
 export interface ChatRun {
+  model_round?: number;
+  model_recovery_count?: number;
+  model_journal_state?: string;
+  model_journal_reason?: string | null;
+  /** Immutable availability at run creation; not evidence of tool execution. */
+  extensions?: {
+    skills: { id: string; name: string; version: number; preloaded: boolean }[];
+    mcp: { id: string; name: string; preloadedToolCount: number }[];
+  };
+  generation_calls?: number;
+  recovery_count?: number;
+  intent?: import("./run-plan.ts").RunIntent;
+  plan_version?: number;
+  plan_target?: import("./run-plan.ts").PlanTarget | null;
+  accepted_plan?: import("./run-plan.ts").RunPlan | null;
+  coding_config?: CodingConfig | null;
+  context_estimate?: ContextEstimate | null;
+  microcompaction_count?: number;
   compaction_state?: string | null;
   compaction_count?: number;
   compaction_only?: boolean;
@@ -58,9 +92,21 @@ export interface ChatRun {
     modelCalls?: number;
     lastInputTokens?: number;
     reported?: boolean;
+    cacheRead?: number;
+    cacheWrite?: number;
   } | null;
 }
 export interface RunEvent {
+  model_round?: number;
+  model_recovery_count?: number;
+  model_journal_state?: string;
+  model_journal_reason?: string | null;
+  generation_calls?: number;
+  recovery_count?: number;
+  plan_version?: number;
+  code_state?: string | null;
+  context_estimate?: ContextEstimate | null;
+  microcompaction_count?: number;
   compaction_state?: string | null;
   compaction_count?: number;
   parts?: MessagePart[] | null;
@@ -129,6 +175,7 @@ export interface ProjectView {
 }
 
 export interface CodeAction {
+  check_label?: string | null;
   review_state?: "reviewing" | "completed" | null;
   approval_source?: "human" | "rule" | "arbiter" | "full" | null;
   approval_reason?: string | null;
@@ -183,3 +230,70 @@ export interface WorkspaceJob {
   result: unknown;
   error_code: string | null;
 }
+
+/** Immutable evidence; observed shell changes never imply exclusive authorship. */
+export interface WorkspaceChange {
+  id: string;
+  action_id: string;
+  run_id: string;
+  path: string;
+  workspace: {
+    conversationId: string;
+    kind: "server" | "desktop";
+    desktopWorkspaceId: string | null;
+  };
+  before_hash: string | null;
+  after_hash: string | null;
+  coverage:
+    | "managed_write"
+    | "content_unavailable"
+    | "observed_shell"
+    | "bounded_shell_observation";
+  status:
+    | "prepared"
+    | "completed"
+    | "failed"
+    | "unknown"
+    | "observed"
+    | "partial";
+  content_available: boolean;
+  created_at: string;
+}
+
+export interface RunChangesPage {
+  canPreviewRollback?: boolean;
+  hasRollbacks?: boolean;
+  changes: WorkspaceChange[];
+  nextOffset: number | null;
+  status?: ChatRun["status"];
+}
+export interface RevisionDiffLine {
+  kind: "context" | "add" | "remove";
+  beforeLine: number | null;
+  afterLine: number | null;
+  text: string;
+  eol: "lf" | "crlf" | "none";
+}
+export type RevisionDiff = {
+  path: string;
+  beforeHash: string | null;
+  afterHash: string | null;
+  beforeBytes: number | null;
+  afterBytes: number | null;
+} & (
+  | { status: "binary" | "too_large" }
+  | {
+      status: "available";
+      beforeBOM: boolean;
+      afterBOM: boolean;
+      additions: number;
+      deletions: number;
+      hunks: {
+        beforeStart: number;
+        afterStart: number;
+        beforeCount: number;
+        afterCount: number;
+        lines: RevisionDiffLine[];
+      }[];
+    }
+);

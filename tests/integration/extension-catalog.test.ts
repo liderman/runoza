@@ -421,6 +421,44 @@ test(
             db,
           )
         ).rows[0]!.extension_manifest;
+        const display = (
+          await call(actor, "/conversations/" + conversation.id)
+        ).json();
+        const frozenExtensions = display.runs[0].extensions;
+        assert.equal(frozenExtensions.mcp[0].id, connection.id);
+        assert.equal(
+          frozenExtensions.mcp[0].name,
+          "Shared connection, private schemas",
+        );
+        assert.equal(frozenExtensions.mcp[0].preloadedToolCount, 1);
+        const displayMetadata = JSON.stringify(frozenExtensions);
+        assert.ok(!displayMetadata.includes(token));
+        assert.ok(!displayMetadata.includes(endpoint));
+        assert.ok(!displayMetadata.includes("inputSchema"));
+        assert.equal(display.runs[0].extension_manifest, undefined);
+        // Renaming/disabling the live connection cannot rewrite past run metadata.
+        await sql`UPDATE mcp_connections SET name='Renamed after start',enabled=false WHERE id=${connection.id}::uuid`.execute(
+          db,
+        );
+        const afterEdit = (
+          await call(actor, "/conversations/" + conversation.id)
+        ).json();
+        assert.deepEqual(afterEdit.runs[0].extensions, frozenExtensions);
+        assert.equal(
+          (
+            await call(
+              actor.id === alice.id ? bob : alice,
+              "/conversations/" + conversation.id,
+              "GET",
+              undefined,
+              404,
+            )
+          ).statusCode,
+          404,
+        );
+        await sql`UPDATE mcp_connections SET name='Shared connection, private schemas',enabled=true WHERE id=${connection.id}::uuid`.execute(
+          db,
+        );
         const serialized = JSON.stringify(manifest);
         assert.ok(serialized.includes(token));
         assert.ok(

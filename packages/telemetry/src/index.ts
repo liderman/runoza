@@ -29,6 +29,14 @@ const allowed = new Set([
   "runoza.queue_wait_ms",
   "runoza.error_code",
   "runoza.exit_code",
+  "runoza.prompt_version",
+  "runoza.context_estimated_tokens",
+  "runoza.input_tokens",
+  "runoza.output_tokens",
+  "runoza.model_calls",
+  "runoza.microcompaction_cleared",
+  "runoza.microcompaction_saved_tokens",
+  "runoza.loop_failures",
 ]);
 export function safeAttributes(values: Attributes): Attributes {
   return Object.fromEntries(
@@ -113,6 +121,9 @@ export function spanContext(span: Span, parent: Context = context.active()) {
 }
 export function withContext<T>(value: Context, fn: () => T) {
   return context.with(value, fn);
+}
+export function recordMetrics(values: Attributes) {
+  trace.getActiveSpan()?.setAttributes(safeAttributes(values));
 }
 export function failure(code: string, span = trace.getActiveSpan()) {
   span?.setStatus({ code: SpanStatusCode.ERROR });

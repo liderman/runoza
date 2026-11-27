@@ -1,8 +1,8 @@
 const fs = require("node:fs/promises"),
-  constants = require("node:fs").constants,
   path = require("node:path"),
   crypto = require("node:crypto"),
   { fork } = require("node:child_process");
+const { atomicFile } = require("./atomic-file.cjs");
 const MAX_FILE = 1024 * 1024;
 function environment() {
   const env = Object.fromEntries(
@@ -109,6 +109,11 @@ function createHost({ approve, pty, sources }) {
     });
   }
   async function action(root, operation, p, id) {
+    const generation = epoch;
+    const checkActive = () => {
+      if (generation !== epoch || cancelled.has(id))
+        throw Error("EXECUTION_CANCELLED");
+    };
     root = await fs.realpath(root);
     if (operation === "mcp.request") {
       const controller = new AbortController();
@@ -161,44 +166,14 @@ function createHost({ approve, pty, sources }) {
         const bytes = Buffer.from(p.base64, "base64");
         if (bytes.length > 10485760 || bytes.toString("base64") !== p.base64)
           throw Error("FILE_SIZE");
-        const temporary = path.join(
-          path.dirname(target),
-          ".runoza-resource-" + crypto.randomUUID(),
+        await atomicFile(
+          root,
+          target,
+          bytes,
+          p.expectedHash,
+          () => safePath(root, p.path, true),
+          checkActive,
         );
-        try {
-          await fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
-          await safePath(root, p.path, true);
-          if (p.expectedHash === null) {
-            try {
-              await fs.link(temporary, target);
-            } catch (e) {
-              if (e.code === "EEXIST") throw Error("FILE_CONFLICT");
-              throw e;
-            }
-          } else {
-            const old = await fs.open(
-              target,
-              constants.O_RDONLY | constants.O_NOFOLLOW,
-            );
-            try {
-              const stat = await old.stat();
-              if (
-                !stat.isFile() ||
-                stat.size > 10485760 ||
-                crypto
-                  .createHash("sha256")
-                  .update(await old.readFile())
-                  .digest("hex") !== p.expectedHash
-              )
-                throw Error("FILE_CONFLICT");
-            } finally {
-              await old.close();
-            }
-            await fs.rename(temporary, target);
-          }
-        } finally {
-          await fs.unlink(temporary).catch(() => {});
-        }
         return {};
       }
       if (operation === "files.read") {
@@ -216,41 +191,17 @@ function createHost({ approve, pty, sources }) {
         };
       }
       if (operation === "files.write") {
-        let before = Buffer.alloc(0);
-        if (p.expectedHash !== null) {
-          const stat = await fs.lstat(target);
-          if (!stat.isFile() || stat.size > MAX_FILE) throw Error("FILE_SIZE");
-          before = await fs.readFile(target);
-          if (
-            crypto.createHash("sha256").update(before).digest("hex") !==
-            p.expectedHash
-          )
-            throw Error("FILE_CONFLICT");
-        }
-        const b = Buffer.from(p.content);
-        if (
-          b.length > 60000 ||
-          before.length + (p.append ? b.length : 0) > MAX_FILE
-        )
-          throw Error("FILE_SIZE");
-        const f = await fs.open(
+        const bytes = Buffer.from(p.content);
+        if (bytes.length > 60000) throw Error("FILE_SIZE");
+        await atomicFile(
+          root,
           target,
-          p.expectedHash === null
-            ? constants.O_WRONLY |
-                constants.O_CREAT |
-                constants.O_EXCL |
-                constants.O_NOFOLLOW
-            : constants.O_RDWR | constants.O_NOFOLLOW,
+          bytes,
+          p.expectedHash,
+          () => safePath(root, p.path, true),
+          checkActive,
+          { append: p.append, maxSize: MAX_FILE },
         );
-        try {
-          if (p.append) await f.write(b, 0, b.length, before.length);
-          else {
-            await f.writeFile(b);
-            await f.truncate(b.length);
-          }
-        } finally {
-          await f.close();
-        }
         return {};
       }
     }

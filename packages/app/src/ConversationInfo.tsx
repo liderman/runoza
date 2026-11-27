@@ -4,12 +4,12 @@ import {
   Button,
   Icon,
   Divider,
-  Progress,
   DefinitionList,
 } from "@gravity-ui/uikit";
 import { Xmark } from "@gravity-ui/icons";
 import type { ChatSnapshot, ModelChoice } from "@runoza/contracts";
 import { ModelFacts, ModelLogo } from "./ModelFacts.tsx";
+import { ContextMeter } from "./ContextMeter.tsx";
 export function ConversationInfo({
   snapshot,
   selectedModel,
@@ -27,11 +27,6 @@ export function ConversationInfo({
     known = runs.filter((r) => r.usage && r.usage.reported !== false),
     last = runs.at(-1),
     format = (n: number) => n.toLocaleString(locale);
-  const used =
-    last?.usage?.reported !== false
-      ? (last?.usage?.lastInputTokens ?? last?.usage?.input)
-      : undefined;
-  const capacity = last?.context_limit;
   const lastResponse = runs.filter((run) => run.status === "completed").at(-1);
   const historical = snapshot?.lastResponseModel;
   const model = lastResponse
@@ -43,10 +38,6 @@ export function ConversationInfo({
         ? selectedModel
         : undefined
     : selectedModel;
-  const percentage =
-    capacity && used !== undefined
-      ? Math.min(100, (100 * used) / capacity)
-      : null;
   const rows = [
     [s("Сообщения", "Messages"), format(snapshot?.messages.length ?? 0)],
     [s("Запуски", "Runs"), format(runs.length)],
@@ -128,41 +119,7 @@ export function ConversationInfo({
             )}
           </Flex>
         )}
-        {percentage !== null && capacity && used !== undefined ? (
-          <Flex direction="column" gap="spacing-2">
-            <Text variant="subheader-2">
-              {s("Контекст последнего запроса", "Last request context")}
-            </Text>
-            <Progress
-              value={percentage}
-              theme={
-                percentage >= 90
-                  ? "danger"
-                  : percentage >= 70
-                    ? "warning"
-                    : "success"
-              }
-              text={`${Math.round(percentage)}%`}
-            />
-            <Text>
-              {format(used)} / {format(capacity)} · {s("осталось", "remaining")}{" "}
-              {format(Math.max(0, capacity - used))}
-            </Text>
-            <Text color="secondary">
-              {s(
-                "По данным последнего обращения и каталогу модели. Это снимок, не точный прогноз следующего запроса.",
-                "Based on last request usage and the model catalog. This is a snapshot, not an exact prediction of the next request.",
-              )}
-            </Text>
-          </Flex>
-        ) : (
-          <Text color="secondary">
-            {s(
-              "Заполнение контекста недоступно: провайдер не передал расход токенов или лимит модели.",
-              "Context usage unavailable: missing usage or model capacity.",
-            )}
-          </Text>
-        )}
+        <ContextMeter run={last} locale={locale} />
         <DefinitionList direction="horizontal" nameMaxWidth={180}>
           {rows.map(([label, value]) => (
             <DefinitionList.Item key={label} name={label}>

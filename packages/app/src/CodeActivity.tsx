@@ -1,8 +1,12 @@
+import { ReadBatchActivity } from "./ReadBatchActivity.tsx";
+import { RunChangesButton, changeTools } from "./RunChanges.tsx";
 import { ToolQuestionForm } from "./ToolQuestionForm.tsx";
 import { permissionPattern } from "@runoza/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { ToolMessage } from "@gravity-ui/aikit";
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
+import { useRunActivity } from "./useRunActivity.ts";
+import { actionAnchor, actionResource } from "./run-presentation.ts";
+import { ActionVerification } from "./ActionVerification.tsx";
 import {
   Alert,
   Box,
@@ -14,11 +18,7 @@ import {
   Text,
   Select,
 } from "@gravity-ui/uikit";
-import type {
-  CodeActivity as Activity,
-  ChatRun,
-  CodeAction,
-} from "@runoza/contracts";
+import type { ChatRun, CodeAction } from "@runoza/contracts";
 import type { IdentityClient } from "@runoza/api-client";
 const labels = {
   ru: {
@@ -26,6 +26,8 @@ const labels = {
     execute: "Команда",
     write_file: "Запись файла",
     read_file: "Чтение файла",
+    workspace_list: "Список файлов",
+    plan_update: "Обновление плана",
     publish_file: "Сохранить файл",
     pending: "Требуется подтверждение",
     approved: "Подтверждено",
@@ -45,6 +47,9 @@ const labels = {
     fileHelp:
       "Файл из рабочей области будет сохранён в Runóza и доступен для скачивания участникам этой беседы.",
     queued: "В очереди",
+    read_batch: "Параллельные чтения",
+    research_readonly: "Исследователь: только чтение",
+    history_read: "Сохранённый результат",
     skills_search: "Поиск скиллов",
     skills_read: "Чтение скилла",
     skills_resource: "Ресурс скилла",
@@ -64,6 +69,8 @@ const labels = {
     execute: "Command",
     write_file: "Write file",
     read_file: "Read file",
+    workspace_list: "List files",
+    plan_update: "Update plan",
     publish_file: "Save file",
     pending: "Approval required",
     approved: "Approved",
@@ -83,6 +90,9 @@ const labels = {
     fileHelp:
       "The file will be saved from the workspace to Runóza and available for conversation participants to download.",
     queued: "Queued",
+    read_batch: "Parallel reads",
+    research_readonly: "Read-only researcher",
+    history_read: "Saved result",
     skills_search: "Search skills",
     skills_read: "Read skill",
     skills_resource: "Skill resource",
@@ -106,26 +116,23 @@ export function CodeActivity({
   run,
   locale,
   actionId,
+  targetLabel,
 }: {
   api: IdentityClient;
   run: ChatRun;
   locale: "ru" | "en";
   actionId?: string;
+  targetLabel?: string;
 }) {
   const t = (key: string) => codeActionLabel(key, locale);
   const [decisionError, setError] = useState(false),
     [busy, setBusy] = useState(false),
-    [scope, setScope] = useState("once");
+    [scopeSelection, setScopeSelection] = useState({
+      actionId: "",
+      value: "once",
+    });
   const active = ["queued", "running"].includes(run.status);
-  const query = useQuery({
-    queryKey: ["run-activity", run.id, run.status],
-    queryFn: ({ signal }) =>
-      api.request<Activity>("/runs/" + run.id + "/activity", "GET", undefined, {
-        signal,
-      }),
-    refetchInterval: active ? 1000 : false,
-    staleTime: 500,
-  });
+  const query = useRunActivity(api, run);
   const data = query.data
     ? {
         ...query.data,
@@ -134,9 +141,38 @@ export function CodeActivity({
           : query.data.actions,
       }
     : null;
+  const [focusDecision, setFocusDecision] = useState<{
+    actionId: string;
+    runId: string;
+    trigger: Element | null;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (!focusDecision) return;
+    if (focusDecision.runId !== run.id) {
+      setFocusDecision(null);
+      return;
+    }
+    const action = query.data?.actions.find(
+      (a) => a.id === focusDecision.actionId,
+    );
+    if (action?.status === "pending" && active) return;
+    // Wait for the replacement action anchor to be committed. A refetch promise
+    // and an animation frame can both finish before React applies the new data.
+    if (
+      document.activeElement === focusDecision.trigger ||
+      document.activeElement === document.body
+    ) {
+      document
+        .getElementById(actionAnchor(focusDecision.actionId))
+        ?.focus({ preventScroll: true });
+    }
+    setFocusDecision(null);
+  }, [focusDecision, query.data, run.id, active]);
   const error = decisionError || query.isError;
   async function decide(a: CodeAction, allow: boolean) {
     setBusy(true);
+    setError(false);
+    const trigger = document.activeElement;
     try {
       await api.request("/runs/" + run.id + "/approval", "POST", {
         actionId: a.id,
@@ -147,7 +183,8 @@ export function CodeActivity({
             ? "related"
             : "exact",
       });
-      void query.refetch();
+      await query.refetch();
+      setFocusDecision({ actionId: a.id, runId: run.id, trigger });
     } catch {
       setError(true);
     } finally {
@@ -156,6 +193,10 @@ export function CodeActivity({
   }
   const [takeover, setTakeover] = useState<string | null>(null);
   const pending = data?.actions.find((a) => a.status === "pending");
+  const scope =
+    scopeSelection.actionId === pending?.id ? scopeSelection.value : "once";
+  const setScope = (value: string) =>
+    setScopeSelection({ actionId: pending?.id ?? "", value });
   const pattern = pending
     ? permissionPattern(pending.tool, pending.input)
     : null;
@@ -165,13 +206,20 @@ export function CodeActivity({
       : pattern?.kind === "file"
         ? pattern.path
         : null;
-  useEffect(() => setScope("once"), [pending?.id]);
   const detail = (a: CodeAction) => (
     <Flex direction="column" gap="spacing-2" paddingBlockStart="spacing-2">
       <pre className="code-output" tabIndex={0} aria-label={t(a.tool)}>
         {a.input}
       </pre>
-      {a.output && (
+      {a.tool === "read_batch" && (
+        <ReadBatchActivity
+          output={a.output}
+          status={a.status}
+          locale={locale}
+          label={t}
+        />
+      )}
+      {a.output && a.tool !== "read_batch" && (
         <pre className="code-output" tabIndex={0} aria-label={t("title")}>
           {a.tool === "publish_file" ? t(a.status) : a.output}
         </pre>
@@ -259,124 +307,163 @@ export function CodeActivity({
           </Flex>
         )}
         {pending && active && (
-          <Card view="outlined">
-            <Box padding="spacing-4">
-              <Flex direction="column" gap="spacing-3">
-                <Text variant="subheader-2">
-                  {pending.review_state === "reviewing" &&
-                  takeover !== pending.id
-                    ? locale === "ru"
-                      ? "Проверка действия"
-                      : "Reviewing action"
-                    : t("pending")}{" "}
-                  · {t(pending.tool)}
-                </Text>
-                <Text color="secondary">
-                  {t(pending.tool === "publish_file" ? "fileHelp" : "help")}
-                </Text>
-                {detail(pending)}
-                {pending.review_state === "reviewing" &&
-                takeover !== pending.id ? (
-                  <Flex gap="spacing-2" alignItems="center" wrap="wrap">
-                    <Loader size="s" />
-                    <Text>
-                      {locale === "ru"
-                        ? "Арбитр проверяет действие…"
-                        : "The reviewer is checking this action…"}
-                    </Text>
-                    {data?.canApprove && (
-                      <Button onClick={() => setTakeover(pending.id)}>
-                        {locale === "ru"
-                          ? "Решить самостоятельно"
-                          : "Review myself"}
-                      </Button>
-                    )}
-                  </Flex>
-                ) : data?.canApprove ? (
-                  <Flex direction="column" gap="spacing-3">
-                    <Select
-                      aria-label={
-                        locale === "ru"
-                          ? "Область разрешения"
-                          : "Approval scope"
-                      }
-                      disabled={busy}
-                      width="max"
-                      value={[scope]}
-                      options={[
-                        {
-                          value: "once",
-                          content:
-                            locale === "ru" ? "Только один раз" : "Only once",
-                        },
-                        {
-                          value: "conversation",
-                          content:
-                            locale === "ru"
-                              ? patternLabel
-                                ? `${patternLabel} · в этой беседе · 30 дней`
-                                : "Это же действие в беседе · 30 дней"
-                              : patternLabel
-                                ? `${patternLabel} · this conversation · 30 days`
-                                : "Same action in this conversation · 30 days",
-                        },
-                        ...(data.localWorkspace
-                          ? [
-                              {
-                                value: "workspace",
-                                content:
-                                  locale === "ru"
-                                    ? patternLabel
-                                      ? `${patternLabel} · в этой папке · 30 дней`
-                                      : "Это же действие в папке · 30 дней"
-                                    : patternLabel
-                                      ? `${patternLabel} · this folder · 30 days`
-                                      : "Same action in this folder · 30 days",
-                              },
-                            ]
-                          : []),
-                      ]}
-                      onUpdate={(v) => setScope(v[0] ?? "once")}
-                    />
-                    <Text variant="caption-2" color="secondary">
-                      {pattern?.kind === "file"
-                        ? locale === "ru"
-                          ? "Разрешение запомнит этот файл и тип операции, включая последующие изменения содержимого. Другие файлы не входят в правило. Отозвать можно в настройках аккаунта."
-                          : "Remembers this file and operation, including later content changes. Other files are excluded. Revoke in account settings."
-                        : pattern?.kind === "command"
+          <div
+            id={actionAnchor(pending.id)}
+            className="run-action-anchor"
+            tabIndex={-1}
+          >
+            <Card view="outlined">
+              <Box padding="spacing-4">
+                <Flex direction="column" gap="spacing-3">
+                  <Text variant="subheader-2">
+                    {pending.review_state === "reviewing" &&
+                    takeover !== pending.id
+                      ? locale === "ru"
+                        ? "Проверка действия"
+                        : "Reviewing action"
+                      : t("pending")}{" "}
+                    · {t(pending.tool)}
+                  </Text>
+                  <Text variant="caption-2" className="agent-wrap">
+                    {locale === "ru" ? "Место: " : "Location: "}
+                    {pending.tool.startsWith("mcp_")
+                      ? locale === "ru"
+                        ? "Подключение MCP · параметры ниже"
+                        : "MCP connection · see parameters below"
+                      : (targetLabel ??
+                        (data?.localWorkspace
                           ? locale === "ru"
-                            ? `Разрешает ${patternLabel} с другими аргументами в выбранной области. Shell-цепочки, подстановки и перенаправления не входят в правило. Отозвать можно в настройках аккаунта.`
-                            : `Allows ${patternLabel} with different arguments in this scope. Shell chains, substitutions and redirections are excluded. Revoke in account settings.`
+                            ? "Выбранная локальная папка"
+                            : "Selected local folder"
                           : locale === "ru"
-                            ? "Запоминаются точные параметры действия. Для оценки вариаций shell-команд используйте «Подтверждать за меня». Разрешение можно отозвать в настройках аккаунта."
-                            : "Remembers exact parameters. Use Approve for me to review command variations. Revoke in account settings."}
+                            ? "Сервер Runóza"
+                            : "Runóza server"))}
+                  </Text>
+                  <Text as="div" className="agent-approval-resource">
+                    {locale === "ru" ? "Ресурс: " : "Resource: "}
+                    {actionResource(pending)}
+                  </Text>
+                  {pending.tool === "publish_file" && (
+                    <Text color="secondary" variant="caption-2">
+                      {t("fileHelp")}
                     </Text>
-                    <Flex gap="spacing-2" wrap="wrap">
-                      <Button
-                        view="action"
-                        disabled={busy}
-                        onClick={() => void decide(pending, true)}
-                      >
-                        {scope === "once"
-                          ? t("allow")
-                          : locale === "ru"
-                            ? "Разрешить и запомнить"
-                            : "Allow and remember"}
-                      </Button>
-                      <Button
-                        disabled={busy}
-                        onClick={() => void decide(pending, false)}
-                      >
-                        {t("deny")}
-                      </Button>
+                  )}
+                  <Disclosure
+                    summary={
+                      locale === "ru"
+                        ? "Параметры и детали действия"
+                        : "Action parameters and details"
+                    }
+                  >
+                    {detail(pending)}
+                  </Disclosure>
+                  {pending.review_state === "reviewing" &&
+                  takeover !== pending.id ? (
+                    <Flex gap="spacing-2" alignItems="center" wrap="wrap">
+                      <Loader size="s" />
+                      <Text>
+                        {locale === "ru"
+                          ? "Арбитр проверяет действие…"
+                          : "The reviewer is checking this action…"}
+                      </Text>
+                      {data?.canApprove && (
+                        <Button onClick={() => setTakeover(pending.id)}>
+                          {locale === "ru"
+                            ? "Решить самостоятельно"
+                            : "Review myself"}
+                        </Button>
+                      )}
                     </Flex>
-                  </Flex>
-                ) : (
-                  <Text>{t("owner")}</Text>
-                )}
-              </Flex>
-            </Box>
-          </Card>
+                  ) : data?.canApprove ? (
+                    <Flex direction="column" gap="spacing-3">
+                      <Select
+                        aria-label={
+                          locale === "ru"
+                            ? "Область разрешения"
+                            : "Approval scope"
+                        }
+                        disabled={busy}
+                        width="max"
+                        value={[scope]}
+                        options={[
+                          {
+                            value: "once",
+                            content:
+                              locale === "ru" ? "Только один раз" : "Only once",
+                          },
+                          {
+                            value: "conversation",
+                            content:
+                              locale === "ru"
+                                ? patternLabel
+                                  ? `${patternLabel} · в этой беседе · 30 дней`
+                                  : "Это же действие в беседе · 30 дней"
+                                : patternLabel
+                                  ? `${patternLabel} · this conversation · 30 days`
+                                  : "Same action in this conversation · 30 days",
+                          },
+                          ...(data.localWorkspace
+                            ? [
+                                {
+                                  value: "workspace",
+                                  content:
+                                    locale === "ru"
+                                      ? patternLabel
+                                        ? `${patternLabel} · в этой папке · 30 дней`
+                                        : "Это же действие в папке · 30 дней"
+                                      : patternLabel
+                                        ? `${patternLabel} · this folder · 30 days`
+                                        : "Same action in this folder · 30 days",
+                                },
+                              ]
+                            : []),
+                        ]}
+                        onUpdate={(v) => setScope(v[0] ?? "once")}
+                      />
+                      <Text variant="caption-2" color="secondary">
+                        {scope === "once"
+                          ? locale === "ru"
+                            ? "Только это действие с указанными параметрами. Разрешение не сохраняется."
+                            : "Only this action with these parameters. No permission is saved."
+                          : pattern?.kind === "file"
+                            ? locale === "ru"
+                              ? "Разрешение запомнит этот файл и тип операции, включая последующие изменения содержимого. Другие файлы не входят в правило. Отозвать можно в настройках аккаунта."
+                              : "Remembers this file and operation, including later content changes. Other files are excluded. Revoke in account settings."
+                            : pattern?.kind === "command"
+                              ? locale === "ru"
+                                ? `Разрешает ${patternLabel} с другими аргументами в выбранной области. Shell-цепочки, подстановки и перенаправления не входят в правило. Отозвать можно в настройках аккаунта.`
+                                : `Allows ${patternLabel} with different arguments in this scope. Shell chains, substitutions and redirections are excluded. Revoke in account settings.`
+                              : locale === "ru"
+                                ? "Запоминаются точные параметры действия. Для оценки вариаций shell-команд используйте «Подтверждать за меня». Разрешение можно отозвать в настройках аккаунта."
+                                : "Remembers exact parameters. Use Approve for me to review command variations. Revoke in account settings."}
+                      </Text>
+                      <Flex gap="spacing-2" wrap="wrap">
+                        <Button
+                          view="action"
+                          disabled={busy}
+                          onClick={() => void decide(pending, true)}
+                        >
+                          {scope === "once"
+                            ? t("allow")
+                            : locale === "ru"
+                              ? "Разрешить и запомнить"
+                              : "Allow and remember"}
+                        </Button>
+                        <Button
+                          disabled={busy}
+                          onClick={() => void decide(pending, false)}
+                        >
+                          {t("deny")}
+                        </Button>
+                      </Flex>
+                    </Flex>
+                  ) : (
+                    <Text>{t("owner")}</Text>
+                  )}
+                </Flex>
+              </Box>
+            </Card>
+          </div>
         )}
         {data && (
           <Flex direction="column" gap="spacing-2">
@@ -386,28 +473,43 @@ export function CodeActivity({
             {data.actions
               .filter((a) => a.id !== pending?.id || !active)
               .map((a) => (
-                <ToolMessage
+                <div
                   key={a.id}
-                  view="compact"
-                  secondaryText={
-                    ["failed", "cancelled"].includes(a.status)
-                      ? undefined
-                      : t(a.status)
-                  }
-                  toolName={t(a.tool)}
-                  status={
-                    a.status === "completed"
-                      ? "success"
-                      : ["failed", "unknown"].includes(a.status)
-                        ? "error"
-                        : ["denied", "cancelled"].includes(a.status)
-                          ? "cancelled"
-                          : "loading"
-                  }
-                  bodyContent={detail(a)}
-                  autoCollapseOnSuccess
-                  autoCollapseOnCancelled
-                />
+                  id={actionAnchor(a.id)}
+                  tabIndex={-1}
+                  className="run-action-anchor"
+                >
+                  <ToolMessage
+                    view="compact"
+                    secondaryText={
+                      ["failed", "cancelled"].includes(a.status)
+                        ? undefined
+                        : t(a.status)
+                    }
+                    toolName={t(a.tool)}
+                    status={
+                      a.status === "completed"
+                        ? "success"
+                        : ["failed", "unknown"].includes(a.status)
+                          ? "error"
+                          : ["denied", "cancelled"].includes(a.status)
+                            ? "cancelled"
+                            : "loading"
+                    }
+                    bodyContent={detail(a)}
+                    autoCollapseOnSuccess
+                    autoCollapseOnCancelled
+                  />
+                  <ActionVerification action={a} locale={locale} />
+                  {changeTools.has(a.tool) && (
+                    <RunChangesButton
+                      api={api}
+                      run={run}
+                      locale={locale}
+                      actionId={a.id}
+                    />
+                  )}
+                </div>
               ))}
           </Flex>
         )}

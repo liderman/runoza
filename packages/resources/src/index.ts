@@ -1,3 +1,4 @@
+export { readRunPlan, writeRunPlan } from "./run-plan.ts";
 import { sql, type Database } from "@runoza/db";
 import { fail, type Identity } from "@runoza/auth";
 import type { StorageService } from "@runoza/storage";
@@ -53,7 +54,7 @@ export async function fileAccess(
   write = false,
 ) {
   const f = (
-    await sql<StoredFile>`SELECT * FROM files WHERE id=${id}::uuid AND organization_id=${u.organization_id}::uuid`.execute(
+    await sql<StoredFile>`SELECT * FROM files WHERE id=${id}::uuid AND organization_id=${u.organization_id}::uuid AND NOT is_revision`.execute(
       db,
     )
   ).rows[0];
@@ -117,6 +118,9 @@ export async function cleanupFiles(
   now = Date.now(),
 ) {
   // DB is the authority. Age thresholds exceed the maximum request duration.
+  await sql`UPDATE files f SET status='deleting',updated_at=now() WHERE f.is_revision AND f.status='ready' AND (f.created_at<${new Date(now - 30 * 24 * 60 * 60 * 1000)} OR (f.created_at<${new Date(now - 60 * 60 * 1000)} AND NOT EXISTS(SELECT 1 FROM workspace_changes w WHERE w.revision_file_id=f.id)))`.execute(
+    db,
+  );
   await sql`UPDATE files SET status='deleting' WHERE status='pending' AND updated_at<${new Date(now - 15 * 60 * 1000)}`.execute(
     db,
   );
@@ -191,3 +195,25 @@ export {
   packageLimits,
 } from "./skill-packages.ts";
 export { mcpAccess } from "./skills.ts";
+
+export { revisionDiff, REVISION_BUNDLE_BYTES } from "./revision-diff.ts";
+export {
+  rollbackConfirmation,
+  assertRollbackIdle,
+  readRollbackHistory,
+  interruptRollbacks,
+} from "./rollback-state.ts";
+export {
+  previewRollback,
+  rollbackRows,
+  rollbackVersion,
+  rollbackSource,
+} from "./rollback-preview.ts";
+
+export {
+  resolveRevisionReference,
+  revisionExcerpt,
+  revisionReferenceContext,
+  assertRevisionReferences,
+  type RevisionStorage,
+} from "./revision-references.ts";

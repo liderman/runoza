@@ -1,7 +1,10 @@
 import { randomUUID, createHash } from "node:crypto";
-import { workspacePath } from "./files.ts";
+import { atomicWriteScript, workspacePath } from "./files.ts";
 import { ExecutionError, type Executor } from "./index.ts";
-const script = String.raw`import os,sys,json,base64,hashlib,stat
+const script =
+  atomicWriteScript() +
+  String.raw`
+import sys,json,base64
 p=json.loads(base64.b64decode(sys.argv[1]));root=os.open(p['root'],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 stage='.runoza-resource-'+p['transfer']
 try:
@@ -20,35 +23,19 @@ try:
  else:
   f=os.open(stage,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=root)
   try:
-   info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_size==p['size']
-   sha=hashlib.sha256()
-   while True:
-    data=os.read(f,65536)
-    if not data: break
-    sha.update(data)
-   assert sha.hexdigest()==p['sha256']
+   info=os.fstat(f);assert stat.S_ISREG(info.st_mode) and info.st_size==p['size'] and info.st_size<=10485760,'FILE_SIZE'
+   data=bytearray()
+   while len(data)<=10485760:
+    chunk=os.read(f,min(65536,10485761-len(data)))
+    if not chunk: break
+    data.extend(chunk)
+   assert len(data)==p['size'] and hashlib.sha256(data).hexdigest()==p['sha256'],'FILE_CONFLICT'
   finally: os.close(f)
-  fd=os.dup(root)
-  try:
-   parts=p['path'].split('/')
-   for part in parts[:-1]:
-    n=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=n
-   if p['expectedHash'] is None:
-    os.link(stage,parts[-1],src_dir_fd=root,dst_dir_fd=fd,follow_symlinks=False);os.unlink(stage,dir_fd=root)
-   else:
-    target=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
-    try:
-     info=os.fstat(target);assert stat.S_ISREG(info.st_mode) and info.st_size<=10485760
-     sha=hashlib.sha256()
-     while True:
-      data=os.read(target,65536)
-      if not data: break
-      sha.update(data)
-     assert sha.hexdigest()==p['expectedHash'],'FILE_CONFLICT'
-    finally: os.close(target)
-    os.replace(stage,parts[-1],src_dir_fd=root,dst_dir_fd=fd)
-  finally: os.close(fd)
+  atomic_write(root,p['path'].split('/'),data,p['expectedHash'],max_size=10485760)
  print('RUNOZA_RESOURCE_OK')
+except BaseException:
+ print('RUNOZA_FILE_OUTCOME_UNKNOWN' if committed or commit_started else 'RUNOZA_FILE_PRECOMMIT_FAILURE',file=sys.stderr)
+ raise
 finally: os.close(root)
 `;
 export async function installResource(
@@ -78,10 +65,16 @@ export async function installResource(
     );
     if (result.exitCode !== 0 || !result.output.includes("RUNOZA_RESOURCE_OK"))
       throw new ExecutionError(
-        result.output.includes("FILE_CONFLICT") ||
-        result.output.includes("FileExistsError")
-          ? "FILE_CONFLICT"
-          : "FILE_UNAVAILABLE",
+        result.output.includes("RUNOZA_FILE_OUTCOME_UNKNOWN") ||
+        ("path" in payload &&
+          result.exitCode !== 0 &&
+          !result.output.includes("RUNOZA_FILE_PRECOMMIT_FAILURE")) ||
+        (result.exitCode === 0 && !result.output.includes("RUNOZA_RESOURCE_OK"))
+          ? "EXECUTION_UNKNOWN"
+          : result.output.includes("FILE_CONFLICT") ||
+              result.output.includes("FileExistsError")
+            ? "FILE_CONFLICT"
+            : "FILE_UNAVAILABLE",
       );
   }
   try {

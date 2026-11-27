@@ -1,7 +1,10 @@
+import { recordMetrics } from "@runoza/telemetry";
 import { sql, type Database } from "@runoza/db";
 import { digest } from "@runoza/auth";
 import {
   compactContext,
+  microcompact,
+  type SavedResult,
   compactionLimits,
   contextTokens,
   historyMessages,
@@ -9,6 +12,7 @@ import {
   ProviderError,
   type ContextMessage,
   type CompactionResult,
+  type GenerationHooks,
 } from "@runoza/providers";
 import type { ChatMessage } from "@runoza/contracts";
 export async function addActionHistory(db: Database, history: ChatMessage[]) {
@@ -109,6 +113,8 @@ export function contextManager(options: {
   conversation: string;
   anchor: string;
   sourceHash: string;
+  microcompaction?: boolean;
+  loopGuard?: boolean;
   model: string;
   contextLimit: number;
   reasoning: Record<string, unknown>;
@@ -116,10 +122,12 @@ export function contextManager(options: {
   signal: AbortSignal;
   notify: (type: string) => Promise<unknown>;
   authorize: () => Promise<void>;
+  generation?: GenerationHooks;
 }) {
   const { db, runId, lease, signal } = options;
   let lastFailedSize: number | undefined;
   let count = 0;
+  let guard: { turn: number; last?: number; rapid: number } | undefined;
   return async (
     messages: ContextMessage[],
     manual = false,
@@ -138,9 +146,91 @@ export function contextManager(options: {
     ).rows;
     if (onlyPending && !requests.length) return messages;
     const forced = manual || requests.length > 0;
+    if (!guard) {
+      const row = (
+        await sql<{
+          loop_guard: { compaction?: typeof guard };
+        }>`SELECT loop_guard FROM chat_runs WHERE id=${runId}::uuid`.execute(db)
+      ).rows[0];
+      guard = row?.loop_guard?.compaction ?? { turn: 0, rapid: 0 };
+    }
+    guard.turn++;
+    if (options.loopGuard)
+      await sql`UPDATE chat_runs SET loop_guard=loop_guard || ${JSON.stringify({ compaction: guard })}::jsonb WHERE id=${runId}::uuid AND lease=${lease}::uuid AND status='running'`.execute(
+        db,
+      );
     const output = Number(options.reasoning.max_tokens) || 8192;
     const limits = compactionLimits(options.contextLimit, output);
-    const size = contextTokens(options.model, messages);
+    let size = contextTokens(options.model, messages);
+    if (!forced && options.microcompaction && size >= limits.trigger) {
+      const ids = new Map<string, string>();
+      for (const message of messages) {
+        if (message.role !== "toolResult") continue;
+        const details = message.details as { actionId?: unknown } | undefined;
+        if (
+          typeof details?.actionId === "string" &&
+          /^[a-f0-9-]{36}$/i.test(details.actionId)
+        )
+          ids.set(message.toolCallId, details.actionId);
+      }
+      const saved = new Map<string, SavedResult>();
+      if (ids.size) {
+        const rows = (
+          await sql<{
+            id: string;
+            tool: string;
+            status: string;
+            chars: number;
+          }>`SELECT a.id,a.tool,a.status,length(a.output)::integer AS chars FROM code_actions a JOIN chat_runs r ON r.id=a.run_id WHERE a.id IN (${sql.join([...new Set(ids.values())].map((id) => sql`${id}::uuid`))}) AND r.conversation_id=${options.conversation}::uuid AND r.owner_id=${options.owner}::uuid`.execute(
+            db,
+          )
+        ).rows;
+        for (const [call, id] of ids) {
+          const row = rows.find((r) => r.id === id);
+          if (row)
+            saved.set(call, {
+              actionId: row.id,
+              tool: row.tool,
+              status: row.status,
+              chars: row.chars,
+            });
+        }
+      }
+      const micro = microcompact({
+        messages,
+        model: options.model,
+        trigger: limits.trigger,
+        saved,
+      });
+      if (micro.cleared) {
+        await options.authorize();
+        signal.throwIfAborted();
+        await db.transaction().execute(async (trx) => {
+          const active = (
+            await sql`SELECT id FROM chat_runs WHERE id=${runId}::uuid AND lease=${lease}::uuid AND status='running' FOR UPDATE`.execute(
+              trx,
+            )
+          ).rows.length;
+          if (!active) throw new ProviderError("RUN_CANCELLED");
+          await sql`INSERT INTO chat_compactions(conversation_id,owner_id,run_id,anchor_message_id,source_hash,summary,model_messages,model,before_tokens,after_tokens,usage) VALUES (${options.conversation}::uuid,${options.owner}::uuid,${runId}::uuid,${options.anchor}::uuid,${options.sourceHash},'Saved result projection; original action evidence retained.',${JSON.stringify(micro.messages.filter((m) => m.role !== "system"))}::jsonb,${options.model},${micro.before},${micro.after},${JSON.stringify({ kind: "microcompaction", cleared: micro.cleared, input: 0, output: 0, totalTokens: 0 })}::jsonb)`.execute(
+            trx,
+          );
+          await sql`UPDATE chat_runs SET microcompaction_count=microcompaction_count+1,context_estimate=${JSON.stringify({ tokens: micro.after, inputBudget: limits.inputBudget, contextTokens: limits.contextTokens, method: "estimated" })}::jsonb WHERE id=${runId}::uuid`.execute(
+            trx,
+          );
+        });
+        recordMetrics({
+          "runoza.microcompaction_cleared": micro.cleared,
+          "runoza.microcompaction_saved_tokens": micro.before - micro.after,
+        });
+        messages = micro.messages;
+        size = micro.after;
+        await options.notify("context.microcompaction.completed");
+      }
+    }
+    await sql`UPDATE chat_runs SET context_estimate=${JSON.stringify({ tokens: size, inputBudget: limits.inputBudget, contextTokens: limits.contextTokens, method: "estimated" })}::jsonb WHERE id=${runId}::uuid AND lease=${lease}::uuid AND status='running'`.execute(
+      db,
+    );
     if (
       !forced &&
       (size < limits.trigger ||
@@ -157,6 +247,17 @@ export function contextManager(options: {
     await options.notify("context.compaction.started");
     let result: CompactionResult | null;
     try {
+      if (options.loopGuard && !forced) {
+        guard.rapid =
+          guard.last !== undefined && guard.turn - guard.last <= 2
+            ? guard.rapid + 1
+            : 0;
+        guard.last = guard.turn;
+        await sql`UPDATE chat_runs SET loop_guard=loop_guard || ${JSON.stringify({ compaction: guard })}::jsonb WHERE id=${runId}::uuid AND lease=${lease}::uuid`.execute(
+          db,
+        );
+        if (guard.rapid >= 2) throw new ProviderError("AGENT_CONTEXT_LOOP");
+      }
       if (++count > 32) throw new ProviderError("COMPACTION_TOO_LARGE");
       result = await compactContext({
         messages,
@@ -171,8 +272,16 @@ export function contextManager(options: {
           options.model,
           options.contextLimit,
           options.reasoning,
+          options.generation,
         ),
       });
+      if (result && !forced && options.loopGuard && guard.rapid === 1)
+        result.messages.push({
+          role: "system",
+          content:
+            "Context budget warning: repeated compaction has been necessary within two model turns. Use smaller output pages and inspect specific evidence. Another rapid refill stops this run; do not repeat completed actions.",
+          timestamp: Date.now(),
+        });
       signal.throwIfAborted();
       await options.authorize();
       await db.transaction().execute(async (trx) => {
@@ -190,7 +299,7 @@ export function contextManager(options: {
           await sql`UPDATE compaction_requests SET status='completed' WHERE id IN (${sql.join(requests.map((r) => sql`${r.id}::uuid`))})`.execute(
             trx,
           );
-        await sql`UPDATE chat_runs SET compaction_state=${result ? "completed" : "unchanged"},compaction_count=compaction_count+${result ? 1 : 0} WHERE id=${runId}::uuid`.execute(
+        await sql`UPDATE chat_runs SET context_estimate=${JSON.stringify({ tokens: result ? contextTokens(options.model, result.messages) : size, inputBudget: limits.inputBudget, contextTokens: limits.contextTokens, method: "estimated" })}::jsonb,compaction_state=${result ? "completed" : "unchanged"},compaction_count=compaction_count+${result ? 1 : 0} WHERE id=${runId}::uuid`.execute(
           trx,
         );
       });
@@ -210,7 +319,19 @@ export function contextManager(options: {
         db,
       );
       await options.notify("context.compaction.failed");
-      if (signal.aborted || forced || size > limits.inputBudget) throw error;
+      if (
+        signal.aborted ||
+        forced ||
+        size > limits.inputBudget ||
+        (error instanceof ProviderError &&
+          [
+            "AGENT_CONTEXT_LOOP",
+            "AGENT_STEP_LIMIT",
+            "AGENT_TIMEOUT",
+            "RUN_CANCELLED",
+          ].includes(error.code))
+      )
+        throw error;
       // A failed proactive summary must not destroy usable context or retry
       // forever on an unchanged transcript. The hard request guard stays active.
       lastFailedSize = size;
