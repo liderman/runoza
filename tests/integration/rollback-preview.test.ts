@@ -590,7 +590,7 @@ test(
       );
       await t.test(
         "deadline and worker shutdown abort pending reads without writes",
-        async () => {
+        async (t) => {
           // Stop the queue loop so this test can hold an isolated running request.
           await stop?.();
           stop = undefined;
@@ -603,6 +603,10 @@ test(
               db,
             );
             let aborted = false;
+            const controller = new AbortController();
+            // Expire only after the pending read starts, not while a slower
+            // database is still validating the request.
+            t.mock.timers.enable({ apis: ["setTimeout"] });
             onRead = async (_p, s) =>
               new Promise((_, reject) => {
                 s.addEventListener(
@@ -613,14 +617,10 @@ test(
                   },
                   { once: true },
                 );
+                if (shutdown)
+                  controller.abort(new ExecutionError("RUN_CANCELLED"));
+                else t.mock.timers.tick(250);
               });
-            const controller = new AbortController();
-            const timer = shutdown
-              ? setTimeout(
-                  () => controller.abort(new ExecutionError("RUN_CANCELLED")),
-                  250,
-                )
-              : undefined;
             try {
               await assert.rejects(
                 runRollbackPreview(
@@ -649,7 +649,7 @@ test(
               assert.ok(aborted);
               assert.equal((await f.fake.readFile("code.ts")).content, "new");
             } finally {
-              clearTimeout(timer);
+              t.mock.timers.reset();
               onRead = undefined;
               await sql`UPDATE workspace_requests SET status='failed' WHERE id=${id}::uuid`.execute(
                 db,
