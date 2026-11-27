@@ -11,6 +11,7 @@ import { sql, type Database } from "@runoza/db";
 import { ExecutionError } from "@runoza/execution";
 import {
   managedStream,
+  MODEL_REQUEST_TIMEOUT_MS,
   contextBudget,
   ProviderError,
   providerFailureCode,
@@ -316,7 +317,7 @@ export function createResearchTool(options: {
                 apiKey: options.connection.key || "local-no-key",
                 maxTokens: outputLimit,
                 maxRetries: 0,
-                timeoutMs: 30000,
+                timeoutMs: MODEL_REQUEST_TIMEOUT_MS,
                 onPayload: (payload) => {
                   if (
                     !contextBudget(

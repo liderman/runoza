@@ -83,7 +83,6 @@ export function RunActivity({
       )}
       {run.mode === "code" && (
         <>
-          <RunChangesButton api={api} run={run} locale={locale} />
           <RunPlanPanel
             api={api}
             run={run}
@@ -100,6 +99,9 @@ export function RunActivity({
         onUpdate={setExpanded}
       >
         <Flex direction="column" gap="spacing-3" paddingBlock="spacing-3">
+          {run.mode === "code" && (
+            <RunChangesButton api={api} run={run} locale={locale} />
+          )}
           <GenerationActivity api={api} run={run} locale={locale} />
           <ModelBoundary run={run} locale={locale} />
           {run.coding_config?.research && run.coding_config.modelJournal && (

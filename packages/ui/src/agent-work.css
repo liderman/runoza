@@ -2,6 +2,14 @@
   min-width: 0;
   padding-block: var(--g-spacing-2);
 }
+.run-status-link {
+  max-width: 100%;
+}
+.run-status-link-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .run-status-details {
   min-width: 0;
   --g-disclosure-text-color: var(--g-color-text-secondary);
@@ -47,6 +55,18 @@
 }
 .agent-composer-submit {
   flex-shrink: 0;
+}
+.conversation-composer {
+  container-type: inline-size;
+}
+@container (max-width: 40rem) {
+  .agent-composer-toolbar {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .agent-composer-controls {
+    flex-basis: 100%;
+  }
 }
 .agent-target-label {
   display: inline-block;

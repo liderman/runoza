@@ -5,7 +5,11 @@ import { permissionPattern } from "@runoza/contracts";
 import { ToolMessage } from "@gravity-ui/aikit";
 import { useLayoutEffect, useState } from "react";
 import { useRunActivity } from "./useRunActivity.ts";
-import { actionAnchor, actionResource } from "./run-presentation.ts";
+import {
+  actionAnchor,
+  actionResource,
+  actionInput,
+} from "./run-presentation.ts";
 import { ActionVerification } from "./ActionVerification.tsx";
 import {
   Alert,
@@ -209,7 +213,7 @@ export function CodeActivity({
   const detail = (a: CodeAction) => (
     <Flex direction="column" gap="spacing-2" paddingBlockStart="spacing-2">
       <pre className="code-output" tabIndex={0} aria-label={t(a.tool)}>
-        {a.input}
+        {actionInput(a)}
       </pre>
       {a.tool === "read_batch" && (
         <ReadBatchActivity

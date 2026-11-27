@@ -59,8 +59,6 @@ for (const theme of ["light", "dark"] as const)
       expect(Array.isArray(content) && content.map((p) => p.type)).toEqual([
         "runoza-tools",
         "text",
-        "runoza-tools",
-        "text",
       ]);
       const api = createIdentityClient(
         "http://transcript-fixture.test",
@@ -81,7 +79,9 @@ for (const theme of ["light", "dark"] as const)
           </TranscriptProvider>
         </ThemeProvider>,
       );
-      expect(screen.getByText("First result.")).toBeTruthy();
+      expect(
+        screen.getByText("First result.").closest("[hidden]"),
+      ).not.toBeNull();
       expect(screen.getByText("Final answer.")).toBeTruthy();
       expect(
         screen.queryByText("Провайдер не передал текст рассуждений."),
@@ -92,7 +92,7 @@ for (const theme of ["light", "dark"] as const)
       const user = userEvent.setup();
       await user.click(
         screen.getAllByRole("button", {
-          name: locale === "ru" ? "Действия: 1" : "Actions: 1",
+          name: locale === "ru" ? "Действия: 2" : "Actions: 2",
         })[0]!,
       );
       const tools = screen.getAllByText(
@@ -112,6 +112,11 @@ test("70 MCP calls and interleaved reasoning collapse into one group without los
   const parts: NonNullable<ChatMessage["parts"]> = [];
   for (let i = 0; i < 70; i++) {
     parts.push({ id: `reason-${i}`, type: "thinking", text: `Inspect ${i}` });
+    parts.push({
+      id: `progress-${i}`,
+      type: "text",
+      text: `Checking source ${i}.`,
+    });
     parts.push({
       id: `tool-${i}`,
       type: "tool",
@@ -166,4 +171,56 @@ test("70 MCP calls and interleaved reasoning collapse into one group without los
   expect(screen.getByText("The full audit is complete.")).toBeTruthy();
   await userEvent.setup().click(group);
   expect(screen.getAllByText("MCP · get_states")).toHaveLength(70);
+});
+
+test("finishing a focused action keeps the work group collapsed and does not steal composer focus", async () => {
+  const api = createIdentityClient("http://frozen.test", async () => {
+    throw Error("No requests");
+  });
+  const snapshot = message.parts![1]!;
+  if (snapshot.type !== "tool" || !snapshot.snapshot) throw Error("fixture");
+  const show = (status: "running" | "completed") => (
+    <ThemeProvider theme="dark">
+      <TranscriptProvider api={api} runs={[]} locale="en">
+        <MessageList<ActionPart>
+          messages={[
+            {
+              id: "focus",
+              role: "assistant",
+              content: transcriptContent(
+                {
+                  ...message,
+                  parts: [
+                    {
+                      ...snapshot,
+                      snapshot: { ...snapshot.snapshot!, status },
+                    },
+                  ],
+                },
+                undefined,
+                "en",
+              ),
+            },
+          ]}
+          messageRendererRegistry={transcriptRegistry}
+          scrollMode="external"
+        />
+      </TranscriptProvider>
+    </ThemeProvider>
+  );
+  const view = render(show("running"));
+  const action = screen
+    .getAllByText("Command")
+    .find((e) => !e.closest("[hidden]"))!;
+  await userEvent.setup().click(action);
+  expect(document.activeElement).not.toBe(document.body);
+  view.rerender(show("completed"));
+  expect(
+    screen
+      .getByRole("button", { name: "Actions: 1" })
+      .getAttribute("aria-expanded"),
+  ).toBe("false");
+  expect(
+    document.activeElement?.classList.contains("transcript-work-group"),
+  ).toBe(true);
 });

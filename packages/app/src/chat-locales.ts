@@ -191,7 +191,7 @@ export const chatDictionaries = {
     MODEL_UNAVAILABLE:
       "This model is no longer available. Select another model.",
     PROVIDER_CONNECTION_FAILED:
-      "Could not connect to the model provider after retrying. Please try again shortly.",
+      "The connection to the model provider failed or timed out. History is preserved. Retry the request or compact the context.",
     PROVIDER_UNAVAILABLE:
       "The provider is unavailable or rejected the request. Check the connection and try again.",
     PROVIDER_AUTH: "The provider rejected the API key.",
@@ -216,7 +216,7 @@ export const chatDictionaries = {
       "The run has already finished. Send /compaction again.",
     RUN_ACTIVE: "This conversation already has a response in progress.",
     RECOVERY_LIMIT:
-      "Text recovery reached its attempt limit. The partial response is preserved.",
+      "Response recovery reached its attempt limit. Any received text remains in the conversation.",
     RECOVERY_TOOL_CALL:
       "Text recovery stopped because a tool call appeared. No tool was replayed.",
     PROVIDER_TRANSIENT: "The provider is temporarily unavailable.",
@@ -474,7 +474,7 @@ export const chatDictionaries = {
     configure: "Настроить провайдеров",
     MODEL_UNAVAILABLE: "Модель больше недоступна. Выберите другую.",
     PROVIDER_CONNECTION_FAILED:
-      "Не удалось подключиться к провайдеру модели после повторной попытки. Попробуйте ещё раз немного позже.",
+      "Соединение с провайдером модели прервано или истекло время ожидания. История сохранена. Повторите запрос или сожмите контекст.",
     PROVIDER_UNAVAILABLE:
       "Провайдер недоступен или отклонил запрос. Проверьте подключение и повторите попытку.",
     PROVIDER_AUTH: "Провайдер отклонил API-ключ.",
@@ -499,7 +499,7 @@ export const chatDictionaries = {
       "Задание уже завершилось. Отправьте /compaction ещё раз.",
     RUN_ACTIVE: "В этой беседе уже генерируется ответ.",
     RECOVERY_LIMIT:
-      "Достигнут лимит восстановления текста. Частичный ответ сохранён.",
+      "Исчерпаны попытки восстановления ответа. Полученный текст, если он был, остаётся в беседе.",
     RECOVERY_TOOL_CALL:
       "Восстановление остановлено из-за вызова инструмента. Инструменты не повторялись.",
     PROVIDER_TRANSIENT: "Провайдер временно недоступен.",

@@ -92,10 +92,34 @@ export function actionResource(action: CodeAction): string {
     const args = JSON.parse(action.input) as Record<string, unknown>;
     for (const key of ["destination", "path", "command", "tool", "query"])
       if (typeof args[key] === "string" && args[key]) return args[key];
+    if (action.tool.startsWith("mcp_"))
+      return typeof args.connection === "string"
+        ? args.connection
+        : action.tool;
   } catch {
     // Commands are stored as plain text; unknown payloads stay inspectable in details.
   }
   return action.input.split("\n").find((line) => line.trim()) ?? action.tool;
+}
+
+/** MCP endpoints can embed credentials in their path. Show the destination
+ * origin while retaining tool arguments for an informed approval decision. */
+export function actionInput(action: CodeAction): string {
+  if (!action.tool.startsWith("mcp_")) return action.input;
+  try {
+    const args = JSON.parse(action.input) as Record<string, unknown>;
+    if (typeof args.endpoint === "string") {
+      try {
+        const url = new URL(args.endpoint);
+        args.endpoint = url.origin + "/…";
+      } catch {
+        args.endpoint = "[MCP endpoint]";
+      }
+    }
+    return JSON.stringify(args, null, 2);
+  } catch {
+    return action.input;
+  }
 }
 
 export const actionAnchor = (id: string) => `run-action-${id}`;

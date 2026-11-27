@@ -297,3 +297,47 @@ test("stable history actions use the latest committed callback and respect read-
   view.rerender(<Harness model="new" readOnly />);
   expect((button as HTMLButtonElement).disabled).toBe(true);
 });
+
+test("long requests can expand without changing the original copy/edit content", () => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+  const snapshot = fixture(1);
+  snapshot.runs = [];
+  snapshot.messages[0]!.content =
+    "Long request. ".repeat(100) + "END OF REQUEST";
+  const edit = vi.fn();
+  render(
+    <ThemeProvider theme="dark">
+      <AppDataProvider>
+        <ChatHistory
+          api={api}
+          snapshot={snapshot}
+          locale="en"
+          busy={false}
+          readOnly={false}
+          canRetry
+          keyboardMode
+          onEdit={edit}
+          onFork={noOp}
+          onVersion={noOp}
+          onRetry={noOp}
+          onError={noOp}
+          onSource={noOp}
+        />
+      </AppDataProvider>
+    </ThemeProvider>,
+  );
+  expect(screen.queryByText(/END OF REQUEST/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Expand request" }));
+  expect(screen.getByText(/END OF REQUEST/)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Collapse request" }));
+  expect(screen.queryByText(/END OF REQUEST/)).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Edit and branch" }));
+  expect(edit).toHaveBeenCalledWith(snapshot.messages[0]);
+});

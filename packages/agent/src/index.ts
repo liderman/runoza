@@ -7,7 +7,11 @@ export {
 import { createReadBatchTool } from "./read-batch.ts";
 import { generationBudget } from "./generation-budget.ts";
 export { generationBudget } from "./generation-budget.ts";
-import { managedStream, type GenerationHooks } from "@runoza/providers";
+import {
+  managedStream,
+  MODEL_REQUEST_TIMEOUT_MS,
+  type GenerationHooks,
+} from "@runoza/providers";
 import {
   toolAllowedInIntent,
   planContentSchema,
@@ -1638,7 +1642,7 @@ export class PiAgentRuntime implements AgentRuntime {
                   : 0,
               // Pi retries connection/HTTP failures only before receiving the stream.
               maxRetries: 1,
-              timeoutMs: 30000,
+              timeoutMs: MODEL_REQUEST_TIMEOUT_MS,
             },
             {
               hooks: {

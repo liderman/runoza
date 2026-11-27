@@ -89,7 +89,9 @@ export function compactionLimits(
     Math.max(16384, Math.ceil(limits.contextTokens * 0.15)),
     Math.floor(limits.inputBudget * 0.3),
   );
-  return { ...limits, trigger: limits.inputBudget - buffer };
+  // Compact before a nominally huge model window turns every next request into
+  // a slow prefill. This is a working-set target, not a truncation of history.
+  return { ...limits, trigger: Math.min(limits.inputBudget - buffer, 98_304) };
 }
 function checkpoint(message: Message) {
   return (
@@ -289,10 +291,10 @@ export async function compactContext(options: {
     256,
     Math.min(8192, options.outputTokens, Math.floor(available * 0.15)),
   );
-  const summaryInput = contextLimits(
-    options.contextLimit,
-    maxOutput,
-  ).inputBudget;
+  const summaryInput = Math.min(
+    contextLimits(options.contextLimit, maxOutput).inputBudget,
+    49_152,
+  );
   const recent = transcript(tail);
   const focus = options.focus
     ? "\nUser's summary focus (does not change the task): " + options.focus

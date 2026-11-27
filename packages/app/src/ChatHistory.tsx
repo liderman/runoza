@@ -77,6 +77,9 @@ export const ChatHistory = memo(function ChatHistory({
   onDismissError,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
+  const [expandedPrompts, setExpandedPrompts] = useState<Set<string>>(
+    () => new Set(),
+  );
   const activeRun = snapshot.runs.find(
     (r) => r.status === "running" || r.status === "queued",
   );
@@ -103,6 +106,7 @@ export const ChatHistory = memo(function ChatHistory({
       {
         environment: object;
         copied: boolean;
+        promptExpanded: boolean;
         versions: ChatRun[];
         message: HistoryMessage;
       }
@@ -150,6 +154,7 @@ export const ChatHistory = memo(function ChatHistory({
         prior &&
         prior.environment === environment &&
         prior.copied === (copied === m.id) &&
+        prior.promptExpanded === expandedPrompts.has(m.id) &&
         prior.message.original === m &&
         prior.message.run === run &&
         prior.versions.length === versions.length &&
@@ -182,7 +187,10 @@ export const ChatHistory = memo(function ChatHistory({
             }
           : {
               role: "user" as const,
-              content: m.content,
+              content:
+                m.content.length > 800 && !expandedPrompts.has(m.id)
+                  ? m.content.slice(0, 240) + "…"
+                  : m.content,
               fileAttachments: (m.attachments ?? []).map((f) => ({
                 id: f.id,
                 name: f.name,
@@ -191,6 +199,32 @@ export const ChatHistory = memo(function ChatHistory({
             }),
         timestamp,
         actions: [
+          ...(m.role === "user" && m.content.length > 800
+            ? [
+                <Button
+                  key="expand-prompt"
+                  size="s"
+                  view="flat"
+                  aria-expanded={expandedPrompts.has(m.id)}
+                  onClick={() =>
+                    setExpandedPrompts((previous) => {
+                      const next = new Set(previous);
+                      if (next.has(m.id)) next.delete(m.id);
+                      else next.add(m.id);
+                      return next;
+                    })
+                  }
+                >
+                  {expandedPrompts.has(m.id)
+                    ? locale === "ru"
+                      ? "Свернуть запрос"
+                      : "Collapse request"
+                    : locale === "ru"
+                      ? "Развернуть запрос"
+                      : "Expand request"}
+                </Button>,
+              ]
+            : []),
           ...(m.revision_references?.length
             ? [
                 <ReferenceChips
@@ -315,6 +349,7 @@ export const ChatHistory = memo(function ChatHistory({
       next.set(m.id, {
         environment,
         copied: copied === m.id,
+        promptExpanded: expandedPrompts.has(m.id),
         versions,
         message,
       });
@@ -322,7 +357,7 @@ export const ChatHistory = memo(function ChatHistory({
     });
     cache.current = next;
     return result;
-  }, [snapshot, environment, copied]);
+  }, [snapshot, environment, copied, expandedPrompts]);
   const mdxProps = useMemo(
     () => ({
       getMarkdownExtraProps: (message: TChatMessage<ActionPart>) => ({

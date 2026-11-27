@@ -14,7 +14,11 @@ import {
 } from "react";
 import type { IdentityClient } from "@runoza/api-client";
 import type { ChatMessage, ChatRun, CodeAction } from "@runoza/contracts";
-import { ToolMessage, ThinkingMessageGroup } from "@gravity-ui/aikit";
+import {
+  ToolMessage,
+  ThinkingMessageGroup,
+  MarkdownRenderer,
+} from "@gravity-ui/aikit";
 import type {
   TMessageContent,
   TAssistantMessageContent,
@@ -25,7 +29,11 @@ import {
   codeActionLabel,
   codeActionTitle,
 } from "./CodeActivity.tsx";
-import { actionAnchor, revealRunEvent } from "./run-presentation.ts";
+import {
+  actionAnchor,
+  actionInput,
+  revealRunEvent,
+} from "./run-presentation.ts";
 import { ActionVerification } from "./ActionVerification.tsx";
 type SingleActionPart = TMessageContent<
   "runoza-tool",
@@ -33,6 +41,7 @@ type SingleActionPart = TMessageContent<
 >;
 type WorkPart =
   | SingleActionPart
+  | TMessageContent<"text", { text: string }>
   | TMessageContent<
       "thinking",
       {
@@ -123,7 +132,7 @@ const ToolPartBody = memo(function ToolPartBody({
           }
           bodyContent={
             <div className="stack">
-              <pre className="code-output">{data.snapshot.input}</pre>
+              <pre className="code-output">{actionInput(data.snapshot)}</pre>
               {data.snapshot.tool === "read_batch" && (
                 <ReadBatchActivity
                   output={data.snapshot.output}
@@ -214,6 +223,7 @@ function ToolGroupBody({
   ).length;
   const ru = locale === "ru";
   const focusedAction = useRef<HTMLElement | null>(null);
+  const groupRoot = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const previous = focusedAction.current;
     if (
@@ -223,14 +233,15 @@ function ToolGroupBody({
     )
       return;
     focusedAction.current = null;
-    setExpanded(true);
-    requestAnimationFrame(() =>
-      document.getElementById(previous.id)?.focus({ preventScroll: true }),
-    );
-  }, [actionsData]);
+    // The approval card moved into collapsed history. Keep keyboard focus in
+    // this group without undoing the user's disclosure choice or scrolling.
+    groupRoot.current?.focus({ preventScroll: true });
+  }, [actionsData, data.parts]);
   return (
     <div
       className="transcript-work-group"
+      ref={groupRoot}
+      tabIndex={-1}
       onFocusCapture={(event) => {
         focusedAction.current = (
           event.target as HTMLElement
@@ -254,6 +265,13 @@ function ToolGroupBody({
             .map((p) =>
               p.type === "runoza-tool" ? (
                 <ToolPart key={p.id} part={p} />
+              ) : p.type === "text" ? (
+                <MarkdownRenderer
+                  key={p.id}
+                  content={p.data.text}
+                  transformOptions={{ html: false }}
+                  openLinksInNewTab
+                />
               ) : (
                 <ThoughtPart key={p.id} part={p} />
               ),
@@ -342,27 +360,22 @@ export function transcriptContent(
       ];
     },
   );
-  const grouped: typeof parts = [];
-  let work: WorkPart[] = [];
-  function flush() {
-    if (!work.length) return;
-    if (work.some((p) => p.type === "runoza-tool"))
-      grouped.push({
-        id: "work-" + work[0]!.id,
-        type: "runoza-tools",
-        data: { runId: run?.id, parts: work },
-      });
-    else grouped.push(...work);
-    work = [];
-  }
-  for (const part of parts) {
-    if (part.type === "runoza-tool" || part.type === "thinking")
-      work.push(part as WorkPart);
-    else {
-      flush();
-      grouped.push(part);
-    }
-  }
-  flush();
-  return grouped;
+  let lastTool = -1;
+  parts.forEach((p, index) => {
+    if (p.type === "runoza-tool") lastTool = index;
+  });
+  if (lastTool < 0) return parts;
+  // Progress paragraphs belong to the same work disclosure as the calls they
+  // introduce. Keep the current/final response after the last call visible.
+  return [
+    {
+      id: "work-" + parts[0]!.id,
+      type: "runoza-tools",
+      data: {
+        runId: run?.id,
+        parts: parts.slice(0, lastTool + 1) as WorkPart[],
+      },
+    },
+    ...parts.slice(lastTool + 1),
+  ];
 }

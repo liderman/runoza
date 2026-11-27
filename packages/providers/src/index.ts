@@ -1,6 +1,7 @@
 import {
   managedStream,
   generationError,
+  MODEL_REQUEST_TIMEOUT_MS,
   type GenerationControl,
 } from "./recovery.ts";
 export * from "./recovery.ts";
@@ -228,7 +229,7 @@ async function* generateInternal(
         typeof reasoning.max_tokens === "number" ? reasoning.max_tokens : 0,
       // Retry only the initial HTTP request; never replay a partially received stream.
       maxRetries: 1,
-      timeoutMs: 30000,
+      timeoutMs: MODEL_REQUEST_TIMEOUT_MS,
       signal,
     },
     generation,

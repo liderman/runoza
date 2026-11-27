@@ -183,6 +183,30 @@ test("oversized evidence is summarized in bounded chunks without silently droppi
   assert.ok(recovered.includes("END_SENTINEL"));
   assert.ok(recovered.includes(JSON.stringify(evidence)));
 });
+
+test("large model windows still compact early and summarize bounded requests without losing evidence", async () => {
+  const evidence = "START " + "device value=7\n".repeat(24000) + " END";
+  const parts: string[] = [];
+  const messages = [
+    user("Audit"),
+    assistant(evidence),
+    user("Verify exact units and timestamps"),
+  ];
+  const r = await compactContext({
+    ...options(messages),
+    contextLimit: 256000,
+    write: async (text) => {
+      assert.ok(contextTokens("gpt-4o", [user(text)]) < 49152);
+      parts.push(JSON.parse(text).transcriptPart);
+      return { text: summary, reason: "stop" };
+    },
+  });
+  assert.ok(r);
+  assert.ok(parts.length > 1);
+  assert.ok(parts.join("").includes(JSON.stringify(evidence)));
+  assert.ok(r.messages.includes(messages.at(-1)!));
+  assert.ok(r.afterTokens < 98304);
+});
 test("unmatched tool calls/results and immovable fixed context fail explicitly", async () => {
   assert.throws(() => contextGroups([batch("pending")[0]!]), /INVALID_HISTORY/);
   assert.throws(() => contextGroups([batch("orphan")[1]!]), /INVALID_HISTORY/);

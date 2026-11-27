@@ -36,6 +36,9 @@ export interface GenerationControl {
   recover?: boolean;
 }
 const stableCodes = new Set([
+  "PROVIDER_CONNECTION_FAILED",
+  "PROVIDER_TRANSIENT",
+  "PROVIDER_UNAVAILABLE",
   "AGENT_STEP_LIMIT",
   "AGENT_TIMEOUT",
   "CONTEXT_LIMIT",
@@ -47,6 +50,9 @@ const stableCodes = new Set([
   "PLAN_TARGET_CHANGED",
   "REVISION_UNAVAILABLE",
 ]);
+// Long-context prefill can take well over 30 seconds. Cancellation and the
+// run deadline remain authoritative; this bounds an individual HTTP request.
+export const MODEL_REQUEST_TIMEOUT_MS = 180_000;
 export function generationError(message = "") {
   for (const code of stableCodes) if (message.includes(code)) return code;
   if (/\b(400|401|403|404|422)\b|authentication|invalid api.key/i.test(message))
@@ -101,6 +107,7 @@ export function managedStream(
   options: Parameters<typeof streamSimple>[2],
   control?: GenerationControl,
 ) {
+  options = { timeoutMs: MODEL_REQUEST_TIMEOUT_MS, ...options };
   if (!control) return streamSimple(model, context, options);
   const out = createAssistantMessageEventStream();
   void (async () => {
@@ -329,7 +336,8 @@ export function managedStream(
           !(await hooks.canRecover())
         )
           throw new Error(code);
-        if (round >= 2) throw new Error("RECOVERY_LIMIT");
+        if (round >= 2)
+          throw new Error(visibleText(aggregate) ? "RECOVERY_LIMIT" : code);
         reason = code;
         round++;
       }

@@ -41,7 +41,10 @@ test(
       const list = calls.get(body.model) ?? [];
       list.push(body);
       calls.set(body.model, list);
-      if (["before", "auth"].includes(body.model) && list.length === 1)
+      if (
+        body.model === "always-busy" ||
+        (["before", "auth"].includes(body.model) && list.length === 1)
+      )
         return reply
           .code(body.model === "auth" ? 401 : 503)
           .send({ error: { message: "fixture failure" } });
@@ -222,6 +225,15 @@ test(
         assert.equal(r.result.errorMessage, "RECOVERY_LIMIT");
         assert.equal(r.text, prefix + "Continued suffix.");
       });
+      await t.test(
+        "empty failed retries preserve the provider cause",
+        async () => {
+          const r = await run("always-busy");
+          assert.equal(r.attempts.length, 3);
+          assert.equal(r.result.errorMessage, "PROVIDER_TRANSIENT");
+          assert.equal(r.text, "");
+        },
+      );
       await t.test("shared budget", async () => {
         const r = await run("length-budget", { limit: 0 });
         assert.equal(r.result.errorMessage, "AGENT_STEP_LIMIT");

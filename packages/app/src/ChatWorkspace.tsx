@@ -1281,7 +1281,7 @@ export function ChatWorkspace({
               />
             )}
             <Card view="outlined" padding="spacing-3">
-              <Flex direction="column" gap="spacing-3">
+              <Flex direction="column" gap="spacing-2">
                 {searchProject && scopeProject && (
                   <Flex alignItems="center" gap="spacing-2" wrap="wrap">
                     <Button
@@ -1469,8 +1469,8 @@ export function ChatWorkspace({
                   value={prompt}
                   onUpdate={setPrompt}
                   placeholder={t("prompt")}
-                  minRows={2}
-                  maxRows={5}
+                  minRows={1}
+                  maxRows={4}
                   view="clear"
                   disabled={readOnly || busy || !selected}
                   controlProps={{

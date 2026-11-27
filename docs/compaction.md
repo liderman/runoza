@@ -10,8 +10,10 @@ cancellation, ownership checks and idempotent submission. It never executes tool
 Automatic compaction runs before model requests, including inside a single long
 MCP task. It reserves the configured answer allowance and the protocol safety
 margin, then keeps additional headroom: 15% of the model window, at least 16,384
-tokens, capped at 30% of the usable input budget for small models. The hard token
-check on the actual outgoing payload remains in place.
+tokens, capped at 30% of the usable input budget for small models. Large windows
+also use a 98,304-token working-set threshold so subsequent requests do not keep
+paying for very large prefills. The hard token check on the actual outgoing
+payload remains in place; original history is retained.
 
 ## Checkpoint quality
 
@@ -31,12 +33,18 @@ Summaries incorporate the previous checkpoint and use recent messages to reconci
 superseded facts. No tool is executed during summarization.
 
 Oversized transcripts are processed in token-bounded chunks with a rolling
-checkpoint; input is never silently clipped. At most 32 summary calls are allowed
+checkpoint. Each summary request uses at most 90% of a 49,152-token input budget
+(or the smaller model budget), including the checkpoint, recent context and
+instruction allowance; input is never silently clipped. At most 32 summary calls are allowed
 per compaction. Empty, unstructured, truncated, cancelled and non-shrinking
 summaries are rejected. A checkpoint is installed only after complete generation,
 size validation and a second authorization/lease check. If proactive summarization
 fails while the original request still fits, work can continue with that unchanged
 context. If no safe context fits, the run stops with a specific error.
+
+Model HTTP requests allow up to 180 seconds for long-context prefill, while Stop,
+lease checks and the overall run deadline still apply. Exhausted retries with no
+text preserve the provider error rather than claiming a partial answer exists.
 
 ## Persistence and recovery
 

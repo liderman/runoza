@@ -19,6 +19,7 @@ import {
 import { ActionVerification } from "../../packages/app/src/ActionVerification";
 import {
   actionAnchor,
+  actionInput,
   jumpToRun,
   runDuration,
   runPresentation,
@@ -715,4 +716,18 @@ test("incoming approval preserves the real composer draft and focus; compacting 
     view.unmount();
     vi.unstubAllGlobals();
   }
+});
+
+test("MCP action details retain arguments but hide credentials embedded in endpoints", () => {
+  const input = JSON.stringify({
+    endpoint: "https://user:password@example.test/private-token/mcp?key=secret",
+    tool: "get_state",
+    arguments: { entity_id: "sensor.fixture" },
+  });
+  const result = actionInput({ ...action, tool: "mcp_call", input });
+  expect(result).toContain("https://example.test/…");
+  expect(result).toContain("sensor.fixture");
+  for (const secret of ["password", "private-token", "secret"])
+    expect(result).not.toContain(secret);
+  expect(input).toContain("private-token");
 });
