@@ -105,6 +105,9 @@ for (const theme of ["dark", "light"] as const)
         task = within(dialog).getByRole("textbox", {
           name: locale === "ru" ? "Задача" : "Task",
         });
+      // Gravity activates the focus manager after the opening transition.
+      // Wait for real keyboard readiness before racing through a fast save.
+      await waitFor(() => expect(document.activeElement).toBe(dialog));
       await user.clear(task);
       await user.type(task, "Updated task");
       await user.click(
