@@ -70,8 +70,9 @@ export function GenerationActivity({
       summary={
         (ru ? "Попытки модели: " : "Model attempts: ") +
         (page?.used ?? run.generation_calls) +
-        "/" +
-        (page?.limit ?? run.max_agent_steps ?? "—")
+        ((page?.limit ?? run.max_agent_steps ?? 0) > 0
+          ? "/" + (page?.limit ?? run.max_agent_steps)
+          : "")
       }
     >
       <Flex direction="column" gap="spacing-2" paddingBlock="spacing-2">

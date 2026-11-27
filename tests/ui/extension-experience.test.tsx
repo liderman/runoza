@@ -316,7 +316,9 @@ test("composer Try preserves draft and sends no request until explicit Send", as
   const user = userEvent.setup();
   const input = await screen.findByRole("textbox", { name: "Message Runóza…" });
   await user.type(input, "Keep my original task.");
-  await user.click(screen.getByRole("button", { name: "Add to message" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Add to message" }),
+  );
   await user.click(await screen.findByRole("menuitem", { name: "Skills" }));
   await user.click(await screen.findByRole("button", { name: "Try Review" }));
   await waitFor(() =>
@@ -326,7 +328,9 @@ test("composer Try preserves draft and sends no request until explicit Send", as
   );
   expect(writes).toEqual([]);
   await waitFor(() => expect(document.activeElement).toBe(input));
-  await user.click(screen.getByRole("button", { name: "Add to message" }));
+  await user.click(
+    await screen.findByRole("button", { name: "Add to message" }),
+  );
   await user.click(
     await screen.findByRole("menuitem", { name: "MCP connections" }),
   );

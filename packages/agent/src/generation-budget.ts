@@ -37,7 +37,10 @@ export function generationBudget(
         if (!run || run.status !== "running" || run.lease !== options.lease)
           throw new ProviderError("RUN_CANCELLED");
         if (run.expired) throw new ProviderError("AGENT_TIMEOUT");
-        if (run.generation_calls >= run.max_agent_steps)
+        if (
+          run.max_agent_steps > 0 &&
+          run.generation_calls >= run.max_agent_steps
+        )
           throw new ProviderError("AGENT_STEP_LIMIT");
         if (options.researchId) {
           const child = (
@@ -51,7 +54,8 @@ export function generationBudget(
           // Keep one shared reservation available for the parent's final response.
           if (
             child.model_calls >= RESEARCH_LIMITS.modelCalls ||
-            run.generation_calls >= run.max_agent_steps - 1
+            (run.max_agent_steps > 0 &&
+              run.generation_calls >= run.max_agent_steps - 1)
           )
             throw new ProviderError("RESEARCH_BUDGET");
           await sql`UPDATE research_runs SET model_calls=model_calls+1 WHERE id=${options.researchId}::uuid`.execute(

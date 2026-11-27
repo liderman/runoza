@@ -233,7 +233,9 @@ export async function queueModelRecovery(
         ? "MODEL_RECOVERY_LIMIT"
         : run.expired
           ? "AGENT_TIMEOUT"
-          : run.generation_calls >= run.max_agent_steps && !checked.final
+          : run.max_agent_steps > 0 &&
+              run.generation_calls >= run.max_agent_steps &&
+              !checked.final
             ? "AGENT_STEP_LIMIT"
             : checked.reason;
     if (reason) {
@@ -405,7 +407,10 @@ export function modelJournal(
       const round = currentRound;
       if (!round) throw new ExecutionError("MODEL_BOUNDARY_INVALID");
       await transaction(async (trx, run) => {
-        if (run.journal_tool_calls >= run.max_agent_steps * 4)
+        if (
+          run.max_agent_steps > 0 &&
+          run.journal_tool_calls >= run.max_agent_steps * 4
+        )
           throw new ExecutionError("AGENT_STEP_LIMIT");
         if (!inherited) {
           const call = (

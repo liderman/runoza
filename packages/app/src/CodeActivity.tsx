@@ -486,7 +486,7 @@ export function CodeActivity({
                         ? undefined
                         : t(a.status)
                     }
-                    toolName={t(a.tool)}
+                    toolName={codeActionTitle(a, locale)}
                     status={
                       a.status === "completed"
                         ? "success"
@@ -496,19 +496,23 @@ export function CodeActivity({
                             ? "cancelled"
                             : "loading"
                     }
-                    bodyContent={detail(a)}
+                    bodyContent={
+                      <>
+                        {detail(a)}{" "}
+                        {changeTools.has(a.tool) && (
+                          <RunChangesButton
+                            api={api}
+                            run={run}
+                            locale={locale}
+                            actionId={a.id}
+                          />
+                        )}
+                      </>
+                    }
                     autoCollapseOnSuccess
                     autoCollapseOnCancelled
                   />
                   <ActionVerification action={a} locale={locale} />
-                  {changeTools.has(a.tool) && (
-                    <RunChangesButton
-                      api={api}
-                      run={run}
-                      locale={locale}
-                      actionId={a.id}
-                    />
-                  )}
                 </div>
               ))}
           </Flex>
@@ -588,4 +592,20 @@ export function approvalReason(reason: string, locale: "ru" | "en") {
     reasons[reason]?.[locale === "ru" ? 0 : 1] ??
     (locale === "ru" ? "Требуется ваше решение" : "Your decision is required")
   );
+}
+
+export function codeActionTitle(action: CodeAction, locale: "ru" | "en") {
+  if (action.tool === "mcp_call" || action.tool === "mcp_schema") {
+    try {
+      const input = JSON.parse(action.input) as {
+        tool?: unknown;
+        connection?: unknown;
+      };
+      if (typeof input.tool === "string")
+        return `MCP · ${input.tool.slice(0, 120)}`;
+    } catch {
+      /* Legacy actions retain their generic label. */
+    }
+  }
+  return codeActionLabel(action.tool, locale);
 }

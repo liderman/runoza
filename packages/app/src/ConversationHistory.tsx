@@ -37,6 +37,11 @@ export function ConversationHistory({
       <div
         ref={viewport}
         className="conversation-scroll"
+        onClickCapture={(event) => {
+          // Expanding history is a reading action, not a request to follow output.
+          if ((event.target as HTMLElement).closest("button[aria-expanded]"))
+            pinned.current = false;
+        }}
         onScroll={() => {
           const element = viewport.current!;
           pinned.current =

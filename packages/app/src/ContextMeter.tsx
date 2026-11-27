@@ -1,4 +1,5 @@
-import { Button, Disclosure, Flex, Progress, Text } from "@gravity-ui/uikit";
+import { useRef, useState } from "react";
+import { Button, Dialog, Flex, Progress, Text } from "@gravity-ui/uikit";
 import type { ChatRun } from "@runoza/contracts";
 
 const finite = (n: unknown): n is number =>
@@ -37,6 +38,8 @@ export function ContextMeter({
   onCompact?: () => void;
   disabled?: boolean;
 }) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   if (!run) return null;
   const ru = locale === "ru";
   const { estimate, lastInput } = contextPresentation(run, sameModel);
@@ -70,99 +73,128 @@ export function ContextMeter({
             : null;
   return (
     <div className="run-context-meter">
-      <Disclosure summary={summary}>
-        <Flex direction="column" gap="spacing-2" paddingBlock="spacing-2">
-          <Text variant="caption-2" color="secondary">
-            {ru
-              ? "Оценка подготовленного запроса. Текущий черновик не включён; это не прогноз следующего сообщения."
-              : "Prepared request estimate. The current draft is not included; this does not predict the next message."}
-          </Text>
-          {!sameModel && (
-            <Text color="secondary">
+      <Button
+        view="flat"
+        size="s"
+        ref={trigger}
+        onClick={() => setOpen(true)}
+        aria-label={summary}
+        title={summary}
+      >
+        {ru ? "Контекст" : "Context"}
+        {estimate
+          ? ` ${Math.round((100 * estimate.tokens) / estimate.inputBudget)}%`
+          : ""}
+      </Button>
+      <Dialog
+        open={open}
+        onOpenChange={setOpen}
+        returnFocus={trigger}
+        hasCloseButton
+        maxWidth="s"
+        contentOverflow="auto"
+        aria-label={ru ? "Контекст" : "Context"}
+      >
+        <Dialog.Header caption={summary} />
+        <Dialog.Body>
+          <Flex direction="column" gap="spacing-2" paddingBlock="spacing-2">
+            <Text variant="caption-2" color="secondary">
               {ru
-                ? "Модель изменена. Оценка обновится при подготовке запроса."
-                : "Model changed. The estimate will update when a request is prepared."}
+                ? "Оценка подготовленного запроса. Текущий черновик не включён; это не прогноз следующего сообщения."
+                : "Prepared request estimate. The current draft is not included; this does not predict the next message."}
             </Text>
-          )}
-          {estimate ? (
-            <>
-              <div
-                role="meter"
-                aria-label={
-                  ru
-                    ? "Оценка входа относительно бюджета"
-                    : "Estimated input relative to budget"
-                }
-                aria-valuemin={0}
-                aria-valuemax={estimate.inputBudget}
-                aria-valuenow={Math.min(estimate.tokens, estimate.inputBudget)}
-                aria-valuetext={`${f(estimate.tokens)} / ${f(estimate.inputBudget)}`}
-              >
-                <div aria-hidden="true">
-                  <Progress
-                    value={Math.min(
-                      100,
-                      (100 * estimate.tokens) / estimate.inputBudget,
-                    )}
-                    size="s"
-                    theme={
-                      estimate.tokens > estimate.inputBudget ? "danger" : "info"
-                    }
-                  />
+            {!sameModel && (
+              <Text color="secondary">
+                {ru
+                  ? "Модель изменена. Оценка обновится при подготовке запроса."
+                  : "Model changed. The estimate will update when a request is prepared."}
+              </Text>
+            )}
+            {estimate ? (
+              <>
+                <div
+                  role="meter"
+                  aria-label={
+                    ru
+                      ? "Оценка входа относительно бюджета"
+                      : "Estimated input relative to budget"
+                  }
+                  aria-valuemin={0}
+                  aria-valuemax={estimate.inputBudget}
+                  aria-valuenow={Math.min(
+                    estimate.tokens,
+                    estimate.inputBudget,
+                  )}
+                  aria-valuetext={`${f(estimate.tokens)} / ${f(estimate.inputBudget)}`}
+                >
+                  <div aria-hidden="true">
+                    <Progress
+                      value={Math.min(
+                        100,
+                        (100 * estimate.tokens) / estimate.inputBudget,
+                      )}
+                      size="s"
+                      theme={
+                        estimate.tokens > estimate.inputBudget
+                          ? "danger"
+                          : "info"
+                      }
+                    />
+                  </div>
                 </div>
-              </div>
-              <Text variant="caption-2">
-                {ru ? "Локальная оценка входа" : "Local input estimate"}:{" "}
-                {f(estimate.tokens)} · {ru ? "бюджет входа" : "input budget"}:{" "}
-                {f(estimate.inputBudget)}
-              </Text>
-              <Text variant="caption-2" color="secondary">
-                {ru ? "Окно модели" : "Model window"}:{" "}
-                {f(estimate.contextTokens)} ·{" "}
-                {ru ? "Резерв вне входа" : "Reserve outside input"}:{" "}
-                {f(estimate.contextTokens - estimate.inputBudget)}
-              </Text>
-            </>
-          ) : null}
-          <Text variant="caption-2">
-            {ru
-              ? "Последний запрос · данные провайдера"
-              : "Last request · provider reported"}
-            :{" "}
-            {lastInput === null
-              ? ru
-                ? "нет данных"
-                : "unavailable"
-              : `${f(lastInput)} ${ru ? "токенов" : "tokens"}`}
-          </Text>
-          <Text variant="caption-2" color="secondary">
-            {ru ? "Сжатий" : "Compactions"}: {run.compaction_count ?? 0} ·{" "}
-            {ru
-              ? "Сокращений сохранённых результатов"
-              : "Saved results reduced"}
-            : {run.microcompaction_count ?? 0}
-          </Text>
-          {compactionLabel && (
-            <Text color={state === "failed" ? "warning" : "secondary"}>
-              {compactionLabel}
+                <Text variant="caption-2">
+                  {ru ? "Локальная оценка входа" : "Local input estimate"}:{" "}
+                  {f(estimate.tokens)} · {ru ? "бюджет входа" : "input budget"}:{" "}
+                  {f(estimate.inputBudget)}
+                </Text>
+                <Text variant="caption-2" color="secondary">
+                  {ru ? "Окно модели" : "Model window"}:{" "}
+                  {f(estimate.contextTokens)} ·{" "}
+                  {ru ? "Резерв вне входа" : "Reserve outside input"}:{" "}
+                  {f(estimate.contextTokens - estimate.inputBudget)}
+                </Text>
+              </>
+            ) : null}
+            <Text variant="caption-2">
+              {ru
+                ? "Последний запрос · данные провайдера"
+                : "Last request · provider reported"}
+              :{" "}
+              {lastInput === null
+                ? ru
+                  ? "нет данных"
+                  : "unavailable"
+                : `${f(lastInput)} ${ru ? "токенов" : "tokens"}`}
             </Text>
-          )}
-          {onCompact && (
-            <Button
-              size="s"
-              disabled={disabled || compacting}
-              onClick={onCompact}
-            >
-              {ru ? "Сжать контекст" : "Compact context"}
-            </Button>
-          )}
-          <Text variant="caption-2" color="secondary">
-            {ru
-              ? "Сжатие меняет рабочий контекст модели. История и полные результаты инструментов сохраняются."
-              : "Compaction changes the model's working context. History and complete tool results are preserved."}
-          </Text>
-        </Flex>
-      </Disclosure>
+            <Text variant="caption-2" color="secondary">
+              {ru ? "Сжатий" : "Compactions"}: {run.compaction_count ?? 0} ·{" "}
+              {ru
+                ? "Сокращений сохранённых результатов"
+                : "Saved results reduced"}
+              : {run.microcompaction_count ?? 0}
+            </Text>
+            {compactionLabel && (
+              <Text color={state === "failed" ? "warning" : "secondary"}>
+                {compactionLabel}
+              </Text>
+            )}
+            {onCompact && (
+              <Button
+                size="s"
+                disabled={disabled || compacting}
+                onClick={onCompact}
+              >
+                {ru ? "Сжать контекст" : "Compact context"}
+              </Button>
+            )}
+            <Text variant="caption-2" color="secondary">
+              {ru
+                ? "Сжатие меняет рабочий контекст модели. История и полные результаты инструментов сохраняются."
+                : "Compaction changes the model's working context. History and complete tool results are preserved."}
+            </Text>
+          </Flex>
+        </Dialog.Body>
+      </Dialog>
     </div>
   );
 }

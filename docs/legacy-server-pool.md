@@ -51,7 +51,7 @@ For full manual re-initiation of the pool, execute `node scripts/code-pool.mjs` 
 ## Limits and isolation
 
 - Two independent containers; waiting for a free slot for up to 120 seconds. Auto-complete implemented; no automatic scaling.
-- By default, up to 64 model requests and 256 tools, one hour for agent work; a separate command - up to 60 seconds. Container: CPU 1, RAM 512 MiB, PID 128; tmpfs `/tmp` 128 MiB and home 64 MiB.
+- By default, no model/tool call ceiling (assistant setting `max_agent_steps=0`); positive settings enforce an optional model-call ceiling and four times as many tool calls. One hour for agent work; a separate command - up to 60 seconds. Container: CPU 1, RAM 512 MiB, PID 128; tmpfs `/tmp` 128 MiB and home 64 MiB.
 - Result file: one regular file up to 1 MiB per call. Simlinks, FIFO, absolute paths and exit via `..` are prohibited. The total quota of files of the organization is retained. Downloading of existing large investments of stage 4 does not change.
 - The output of one tool is limited to 100,000 characters; the models are transmitted to the last 30,000. Unknown outcome and exceeding output stop agency work.
 - Container networks are separate and `internal`; public HTTP/HTTPS is available through code-egress, there is no direct access to PostgreSQL, RustFS or a neighboring terminal. Unprivileged user, read-only root, no-new-privileges, cap_drop ALL. Docker socket is not mounted in any container. The Open Terminal token itself is not considered a secret from the code in the same container; there are no infrastructure keys there.

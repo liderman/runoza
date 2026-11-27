@@ -147,6 +147,7 @@ test(
     };
     try {
       expect(project).toHaveBeenCalledTimes(500);
+      fireEvent.click(screen.getByRole("button", { name: "Actions: 1" }));
       fireEvent.click(screen.getByText("Command"));
       const toolOutput = screen.getByText("Preserved tool output");
       expect(toolOutput.closest("[hidden]")).toBeNull();

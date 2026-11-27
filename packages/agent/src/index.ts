@@ -271,7 +271,7 @@ export class PiAgentRuntime implements AgentRuntime {
       });
       return id;
     };
-    const maxSteps = input.maxSteps ?? 64;
+    const maxSteps = input.maxSteps ?? 0;
     let thoughts = "";
     let calls = 0;
     const measured = {
@@ -385,7 +385,7 @@ export class PiAgentRuntime implements AgentRuntime {
             : name === "workspace_search"
               ? "Search literal text in relative workspace files with a bounded traversal. path=empty searches the workspace root; glob supports * and ?. Excludes symlinks, secret and internal paths, generated/dependency folders. Returns line numbers, SHA-256, budgets and truncation; no results is not proof of absence when truncated. Requires approval."
               : name.startsWith("mcp_")
-                ? "Use mcp_search to find enabled connections and tools, then mcp_schema or mcp_list for schemas before mcp_call. Execution requires approval; metadata never grants permission."
+                ? "Use mcp_search to find enabled connections and tools, then mcp_schema for the specific tool before mcp_call. Only refresh mcp_list if the schema is not cached; do not repeatedly load whole catalogs. Execution requires approval; metadata never grants permission."
                 : name === "files_export"
                   ? "Copy a virtual conversation file to a relative workspace destination for grep/jq or other code tools. Source path begins runoza-files/. Requires approval. Up to 10 MiB. expectedHash=null creates a new file; use the destination hash to replace. Parent directories must already exist."
                   : name === "skills_copy"
@@ -1265,7 +1265,7 @@ export class PiAgentRuntime implements AgentRuntime {
             execute: async (...args) => {
               if (fatal) throw new ExecutionError(fatal);
               await authorized();
-              if (++calls > maxSteps * 4) {
+              if (++calls > maxSteps * 4 && maxSteps > 0) {
                 fatal = "AGENT_STEP_LIMIT";
                 controller.abort();
                 throw new ExecutionError(fatal);
@@ -1671,7 +1671,8 @@ export class PiAgentRuntime implements AgentRuntime {
         prepareRequest: async ({ context }) => {
           await authorized();
           if (fatal) throw new ExecutionError(fatal);
-          if (++turns > maxSteps) throw new ExecutionError("AGENT_STEP_LIMIT");
+          if (++turns > maxSteps && maxSteps > 0)
+            throw new ExecutionError("AGENT_STEP_LIMIT");
           if (input.prepareContext) {
             let messages: ContextMessage[];
             try {
@@ -1784,7 +1785,7 @@ export class PiAgentRuntime implements AgentRuntime {
         signal.throwIfAborted();
         if (agent.state.errorMessage)
           throw new ExecutionError(
-            turns > maxSteps
+            maxSteps > 0 && turns > maxSteps
               ? "AGENT_STEP_LIMIT"
               : providerFailureCode(agent.state.errorMessage),
           );

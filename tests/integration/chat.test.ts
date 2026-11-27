@@ -952,13 +952,18 @@ test("chat: owner ACL, durable runs, branching, streaming and provider controls"
           admin,
           "/admin/assistant-settings",
           "PUT",
-          { title_mode: "off", max_agent_steps: 0 },
+          { title_mode: "off", max_agent_steps: -1 },
           400,
         );
         await call(admin, "/admin/assistant-settings", "PUT", {
           title_mode: "off",
-          max_agent_steps: 64,
+          max_agent_steps: 0,
         });
+        assert.equal(
+          (await call(admin, "/admin/assistant-settings")).settings
+            .max_agent_steps,
+          0,
+        );
       },
     );
   } finally {

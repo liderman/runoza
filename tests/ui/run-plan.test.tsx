@@ -82,6 +82,11 @@ for (const theme of ["dark", "light"] as const)
         </ThemeProvider>,
       );
       await screen.findByText("Fix arithmetic");
+      const steps = screen.getByRole("button", {
+        name: locale === "ru" ? "Шаги: 3" : "Steps: 3",
+      });
+      expect(steps.getAttribute("aria-expanded")).toBe("false");
+      await user.click(steps);
       expect(
         screen
           .getByText("Apply fix")
@@ -322,13 +327,14 @@ test("composer start sends only accepted version and preserves draft, file and r
     screen.getByRole("button", { name: /Remove reference: src.ts/ }),
   ).toBeTruthy();
   await screen.findByText("draft.txt");
-  const choice = screen.getByRole("checkbox", {
-    name: "Plan before implementing",
+  const choice = screen.getByRole("combobox", {
+    name: "Work mode",
   });
   await waitFor(() =>
     expect((choice as HTMLInputElement).disabled).toBe(false),
   );
   await user.click(choice);
+  await user.click(screen.getByText("Plan only"));
   await user.click(screen.getByRole("button", { name: "Send" }));
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]?.intent).toBe("plan");

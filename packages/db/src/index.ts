@@ -1,3 +1,4 @@
+import { agentBudgetMigration } from "./agent-budget-migration.ts";
 import { researchMigration } from "./research-migration.ts";
 import { rollbackMigration } from "./rollback-migration.ts";
 import { modelJournalMigration } from "./model-journal-migration.ts";
@@ -43,7 +44,7 @@ import { mcpNetworkMigration } from "./mcp-network-migration.ts";
 import { agentFilesMigration } from "./agent-files-migration.ts";
 import { codingFoundationMigration } from "./coding-foundation-migration.ts";
 import { revisionReferencesMigration } from "./revision-references-migration.ts";
-export const SCHEMA_VERSION = "045_managed_rollback";
+export const SCHEMA_VERSION = "046_agent_budget";
 export function createDatabase(connectionString: string) {
   const pool = new Pool({
     connectionString,
@@ -125,6 +126,7 @@ export const migrations: Record<string, Migration> = {
   "043_model_journal": modelJournalMigration,
   "044_readonly_research": researchMigration,
   "045_managed_rollback": rollbackMigration,
+  "046_agent_budget": agentBudgetMigration,
 };
 export function migrator(db: Database) {
   return new Migrator({

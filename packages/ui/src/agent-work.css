@@ -34,7 +34,6 @@
 }
 .run-context-meter {
   min-width: 0;
-  margin-block-end: var(--g-spacing-2);
 }
 .agent-approval-resource {
   max-height: 6rem;

@@ -108,6 +108,9 @@ export function jumpToRun(runId: string, actionId?: string) {
   document
     .getElementById(runAnchor(runId))
     ?.dispatchEvent(new Event(revealRunEvent));
+  window.dispatchEvent(
+    new CustomEvent(revealRunEvent, { detail: { runId, actionId } }),
+  );
   requestAnimationFrame(() => {
     const element =
       (actionId ? document.getElementById(actionAnchor(actionId)) : null) ??

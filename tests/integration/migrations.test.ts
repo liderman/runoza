@@ -32,7 +32,35 @@ test("upgrade, concurrent migrations, idempotence, schema mismatch and durable q
       }>`SELECT installation_id FROM installation`.execute(db)
     ).rows[0]!.installation_id;
     await assert.rejects(assertSchema(db));
+    assert.equal(
+      (await migrator(db).migrateTo("045_managed_rollback")).error,
+      undefined,
+    );
+    const legacy = randomUUID(),
+      custom = randomUUID();
+    await sql`INSERT INTO organizations(id,name) VALUES (${legacy}::uuid,'Legacy default'),(${custom}::uuid,'Custom limit')`.execute(
+      db,
+    );
+    await sql`INSERT INTO assistant_settings(organization_id,max_agent_steps) VALUES (${legacy}::uuid,64),(${custom}::uuid,96)`.execute(
+      db,
+    );
     await Promise.all([migrate(db), migrate(db)]);
+    const limits = (
+      await sql<{
+        organization_id: string;
+        max_agent_steps: number;
+      }>`SELECT organization_id,max_agent_steps FROM assistant_settings`.execute(
+        db,
+      )
+    ).rows;
+    assert.equal(
+      limits.find((x) => x.organization_id === legacy)?.max_agent_steps,
+      0,
+    );
+    assert.equal(
+      limits.find((x) => x.organization_id === custom)?.max_agent_steps,
+      96,
+    );
     await assertSchema(db);
     assert.deepEqual(await migrate(db), []);
     assert.equal(

@@ -98,7 +98,7 @@ export async function registerChat(
             title_provider_id: { anyOf: [uuid, { type: "null" }] },
             title_model: { anyOf: [str(200), { type: "null" }] },
             max_parallel_runs: { type: "integer", minimum: 1, maximum: 100 },
-            max_agent_steps: { type: "integer", minimum: 1, maximum: 500 },
+            max_agent_steps: { type: "integer", minimum: 0, maximum: 500 },
           },
           ["title_mode", "max_agent_steps"],
         ),

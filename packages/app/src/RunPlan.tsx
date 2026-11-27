@@ -123,11 +123,6 @@ export function RunPlanPanel({
               : "Task plan"}
           {plan ? ` · v${plan.version}` : ""}
         </Text>
-        <Text variant="caption-2" color="secondary">
-          {ru
-            ? "Статусы отражают план работы. Результаты проверок — в истории действий."
-            : "Step statuses describe the work plan. Verification results are in the action history."}
-        </Text>
         {query.isError && (
           <Flex gap="spacing-2">
             <Text color="warning">
@@ -158,7 +153,7 @@ export function RunPlanPanel({
                   ? `Шаги: ${plan.steps.length}`
                   : `Steps: ${plan.steps.length}`
               }
-              defaultExpanded
+              defaultExpanded={false}
             >
               <ol className="run-plan-steps">
                 {plan.steps.map((s) => (

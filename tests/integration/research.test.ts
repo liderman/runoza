@@ -394,7 +394,7 @@ test(
             db,
           )
         ).rows;
-      const successful = await setup();
+      const successful = await setup("normal", true, true, "execute", 0);
       await t.test(
         "child returns real evidence and charges every request to the parent",
         async () => {

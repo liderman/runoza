@@ -26,7 +26,7 @@ export async function assistantSettings(db: Database, org: string) {
     title_mode: "auto" as const,
     title_provider_id: null,
     title_model: null,
-    max_agent_steps: 64,
+    max_agent_steps: 0,
     max_parallel_runs: 10,
   };
   const models = (

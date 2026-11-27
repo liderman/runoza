@@ -439,7 +439,7 @@ test(
               db,
             );
           if (ceiling === "model")
-            await sql`UPDATE chat_runs SET generation_calls=max_agent_steps WHERE id=${f.id}::uuid`.execute(
+            await sql`UPDATE chat_runs SET max_agent_steps=64,generation_calls=64 WHERE id=${f.id}::uuid`.execute(
               db,
             );
           if (ceiling === "time")
@@ -447,7 +447,7 @@ test(
               db,
             );
           if (ceiling === "tools") {
-            await sql`UPDATE chat_runs SET journal_tool_calls=max_agent_steps*4 WHERE id=${f.id}::uuid`.execute(
+            await sql`UPDATE chat_runs SET max_agent_steps=64,journal_tool_calls=256 WHERE id=${f.id}::uuid`.execute(
               db,
             );
             assert.equal(

@@ -1,10 +1,10 @@
+import type { RunPlan } from "@runoza/contracts";
 import {
   ConversationQueuePanel,
   useConversationQueue,
   useQueueSubmission,
 } from "./ConversationQueue.tsx";
 import type { QueuedInputContent } from "@runoza/contracts";
-import { RunPlanPanel } from "./RunPlan.tsx";
 import {
   RevisionComposerContext,
   ReferenceChips,
@@ -53,7 +53,6 @@ import type { ProjectView } from "@runoza/contracts";
 import { useContext, useEffect, useRef, useState, type Ref } from "react";
 import {
   Portal,
-  Checkbox,
   Button,
   Select,
   Flex,
@@ -866,6 +865,35 @@ export function ChatWorkspace({
   });
   const historySource = useEventCallback(openSource);
   const historyError = useEventCallback(() => setError("error"));
+  const dismissRunError = useEventCallback((runId: string) => {
+    void action(async () => {
+      await api.request("/runs/" + runId + "/dismiss-error", "POST");
+      if (id) await load(id);
+    });
+  });
+  const executeSavedPlan = useEventCallback((plan: RunPlan) =>
+    send(
+      locale === "ru"
+        ? "Приступить к выполнению плана"
+        : "Start implementation",
+      undefined,
+      undefined,
+      {
+        preserveDraft: true,
+        planAcceptance: { runId: plan.runId, version: plan.version },
+      },
+    ),
+  );
+  const continueTask = useEventCallback(() => {
+    void send(
+      locale === "ru"
+        ? "Продолжи незавершённую задачу с места остановки. Используй уже собранные данные и сохранённые результаты. Не повторяй выполненные действия; сначала проверь, что осталось, и доведи задачу до результата."
+        : "Continue the unfinished task from where it stopped. Reuse collected evidence and saved results. Do not repeat completed actions; first check what remains and complete the task.",
+      undefined,
+      undefined,
+      { preserveDraft: true },
+    );
+  });
   const lastRun = snapshot?.runs.find(
     (r) => r.assistant_message_id === snapshot.conversation.head_id,
   );
@@ -1168,36 +1196,6 @@ export function ChatWorkspace({
                 }
               />
             )}
-          {lastRun?.error_code && !lastRun.dismissed && (
-            <Alert
-              theme={lastRun.status === "failed" ? "danger" : "warning"}
-              message={t(lastRun.error_code)}
-              onClose={() =>
-                void action(async () => {
-                  await api.request(
-                    "/runs/" + lastRun.id + "/dismiss-error",
-                    "POST",
-                  );
-                  if (id) await load(id);
-                })
-              }
-            />
-          )}
-          {lastRun &&
-            !lastRun.dismissed &&
-            ["failed", "cancelled"].includes(lastRun.status) && (
-              <Flex gap="spacing-2" alignItems="center" wrap="wrap">
-                {lastRun.status === "cancelled" && (
-                  <Text color="secondary">{t("RUN_CANCELLED")}</Text>
-                )}
-                <Button
-                  disabled={readOnly || busy || Boolean(active) || !selected}
-                  onClick={() => void send("", lastRun.user_message_id)}
-                >
-                  {t("retry")}
-                </Button>
-              </Flex>
-            )}
           {source && id && (
             <SourceEvidence
               key={source.message + source.ordinal}
@@ -1252,6 +1250,16 @@ export function ChatWorkspace({
                 onRetry={historyRetry}
                 onSource={historySource}
                 onError={historyError}
+                onDismissError={dismissRunError}
+                onExecutePlan={!readOnly ? executeSavedPlan : undefined}
+                planDisabled={
+                  readOnly ||
+                  busy ||
+                  Boolean(active) ||
+                  !modelAvailable ||
+                  approvalUnavailable
+                }
+                onContinue={!readOnly ? continueTask : undefined}
               />
             )}
           </Box>
@@ -1263,163 +1271,17 @@ export function ChatWorkspace({
             maxWidth="54rem"
             marginInline="auto"
           >
-            {(active ?? lastRun) && (
+            {active && (
               <RunStatusStrip
-                key={"status-" + (active ?? lastRun)!.id}
-                run={(active ?? lastRun)!}
+                key={"status-" + active.id}
+                run={active}
                 api={api}
                 locale={locale}
                 targetLabel={targetLabel}
               />
             )}
-            {(active ?? lastRun)?.mode === "code" && (
-              <RunPlanPanel
-                key={"plan-" + (active ?? lastRun)!.id}
-                api={api}
-                run={(active ?? lastRun)!}
-                locale={locale}
-                editable={!readOnly}
-                disabled={
-                  busy ||
-                  Boolean(active) ||
-                  !modelAvailable ||
-                  approvalUnavailable
-                }
-                onExecute={
-                  snapshot?.conversation.head_id ===
-                    (active ?? lastRun)?.assistant_message_id && !readOnly
-                    ? (plan) =>
-                        send(
-                          locale === "ru"
-                            ? "Приступить к выполнению плана"
-                            : "Start implementation",
-                          undefined,
-                          undefined,
-                          {
-                            preserveDraft: true,
-                            planAcceptance: {
-                              runId: plan.runId,
-                              version: plan.version,
-                            },
-                          },
-                        )
-                    : undefined
-                }
-              />
-            )}
-            <ContextMeter
-              key={(active ?? lastRun)?.id ?? "empty"}
-              run={active ?? lastRun}
-              locale={locale}
-              sameModel={Boolean(
-                (active ?? lastRun) &&
-                  selectedModel?.id === (active ?? lastRun)?.model &&
-                  selectedModel?.providerId ===
-                    (active ?? lastRun)?.provider_id,
-              )}
-              disabled={readOnly || busy || !modelAvailable}
-              onCompact={
-                id
-                  ? () => {
-                      void send("/compaction", undefined, undefined, {
-                        preserveDraft: true,
-                      });
-                    }
-                  : undefined
-              }
-            />
-            {id && (
-              <ConversationQueuePanel
-                key={id}
-                api={api}
-                id={id}
-                locale={locale}
-                readOnly={readOnly}
-                queue={queue}
-                submission={queueSubmission}
-                selection={modelAvailable ? queueSelection : undefined}
-              />
-            )}
             <Card view="outlined" padding="spacing-3">
               <Flex direction="column" gap="spacing-3">
-                {executionEnabled && (
-                  <Checkbox
-                    checked={planning}
-                    onUpdate={setPlanning}
-                    disabled={busy || readOnly}
-                    content={
-                      locale === "ru"
-                        ? "Сначала составить план"
-                        : "Plan before implementing"
-                    }
-                  />
-                )}
-                {codeEnabled && (
-                  <Flex>
-                    <Menu
-                      trigger={
-                        <Button
-                          view="flat"
-                          disabled={busy || Boolean(active) || readOnly}
-                          aria-label={
-                            (locale === "ru" ? "Работать в: " : "Work in: ") +
-                            targetLabel
-                          }
-                        >
-                          <span
-                            className="agent-target-label"
-                            title={targetLabel}
-                          >
-                            {(locale === "ru" ? "Работать в: " : "Work in: ") +
-                              targetLabel}
-                          </span>
-                          <Icon data={ChevronDown} />
-                        </Button>
-                      }
-                    >
-                      <Menu.Item
-                        selected={!localTarget}
-                        disabled={
-                          Boolean(snapshot?.runs.length) || Boolean(active)
-                        }
-                        onClick={() => void chooseTarget(false)}
-                      >
-                        {locale === "ru" ? "Сервер Runóza" : "Runóza server"}
-                      </Menu.Item>
-                      {window.runozaDesktop && (
-                        <Menu.Item
-                          selected={localTarget}
-                          disabled={
-                            Boolean(snapshot?.runs.length) || Boolean(active)
-                          }
-                          onClick={() => void chooseTarget(true)}
-                        >
-                          {locale === "ru"
-                            ? "Локально · выбрать папку…"
-                            : "Local · choose folder…"}
-                        </Menu.Item>
-                      )}
-                      {localTarget && !window.runozaDesktop && (
-                        <Menu.Item selected disabled>
-                          {targetLabel}
-                        </Menu.Item>
-                      )}
-                      {Boolean(snapshot?.runs.length) && (
-                        <Menu.Item disabled>
-                          {locale === "ru"
-                            ? "Для другого места создайте новую беседу"
-                            : "Start a new conversation to change location"}
-                        </Menu.Item>
-                      )}
-                      <Menu.Divider />
-                      <Menu.Item onClick={() => void openWorkspace()}>
-                        {locale === "ru"
-                          ? "Открыть рабочую область"
-                          : "Open workspace"}
-                      </Menu.Item>
-                    </Menu>
-                  </Flex>
-                )}
                 {searchProject && scopeProject && (
                   <Flex alignItems="center" gap="spacing-2" wrap="wrap">
                     <Button
@@ -1608,7 +1470,7 @@ export function ChatWorkspace({
                   onUpdate={setPrompt}
                   placeholder={t("prompt")}
                   minRows={2}
-                  maxRows={8}
+                  maxRows={5}
                   view="clear"
                   disabled={readOnly || busy || !selected}
                   controlProps={{
@@ -1642,6 +1504,28 @@ export function ChatWorkspace({
                     minWidth="0"
                     wrap="wrap"
                   >
+                    {executionEnabled && (
+                      <Select
+                        size="s"
+                        aria-label={
+                          locale === "ru" ? "Режим работы" : "Work mode"
+                        }
+                        value={[planning ? "plan" : "execute"]}
+                        disabled={busy || readOnly}
+                        onUpdate={(v) => setPlanning(v[0] === "plan")}
+                        options={[
+                          {
+                            value: "execute",
+                            content: locale === "ru" ? "Выполнить" : "Execute",
+                          },
+                          {
+                            value: "plan",
+                            content:
+                              locale === "ru" ? "Только план" : "Plan only",
+                          },
+                        ]}
+                      />
+                    )}
                     <ComposerAddMenu
                       locale={locale}
                       onSearchProject={
@@ -1935,6 +1819,117 @@ export function ChatWorkspace({
                 </Flex>
               </Flex>
             </Card>
+            <Flex
+              gap="spacing-1"
+              wrap="wrap"
+              alignItems="center"
+              justifyContent="space-between"
+              className="composer-utilities"
+            >
+              {" "}
+              {codeEnabled && (
+                <Flex>
+                  <Menu
+                    trigger={
+                      <Button
+                        view="flat"
+                        disabled={busy || Boolean(active) || readOnly}
+                        aria-label={
+                          (locale === "ru" ? "Работать в: " : "Work in: ") +
+                          targetLabel
+                        }
+                      >
+                        <span
+                          className="agent-target-label"
+                          title={targetLabel}
+                        >
+                          {(locale === "ru" ? "Работать в: " : "Work in: ") +
+                            targetLabel}
+                        </span>
+                        <Icon data={ChevronDown} />
+                      </Button>
+                    }
+                  >
+                    <Menu.Item
+                      selected={!localTarget}
+                      disabled={
+                        Boolean(snapshot?.runs.length) || Boolean(active)
+                      }
+                      onClick={() => void chooseTarget(false)}
+                    >
+                      {locale === "ru" ? "Сервер Runóza" : "Runóza server"}
+                    </Menu.Item>
+                    {window.runozaDesktop && (
+                      <Menu.Item
+                        selected={localTarget}
+                        disabled={
+                          Boolean(snapshot?.runs.length) || Boolean(active)
+                        }
+                        onClick={() => void chooseTarget(true)}
+                      >
+                        {locale === "ru"
+                          ? "Локально · выбрать папку…"
+                          : "Local · choose folder…"}
+                      </Menu.Item>
+                    )}
+                    {localTarget && !window.runozaDesktop && (
+                      <Menu.Item selected disabled>
+                        {targetLabel}
+                      </Menu.Item>
+                    )}
+                    {Boolean(snapshot?.runs.length) && (
+                      <Menu.Item disabled>
+                        {locale === "ru"
+                          ? "Для другого места создайте новую беседу"
+                          : "Start a new conversation to change location"}
+                      </Menu.Item>
+                    )}
+                    <Menu.Divider />
+                    <Menu.Item onClick={() => void openWorkspace()}>
+                      {locale === "ru"
+                        ? "Открыть рабочую область"
+                        : "Open workspace"}
+                    </Menu.Item>
+                  </Menu>
+                </Flex>
+              )}
+              <Flex gap="spacing-1" wrap="wrap" alignItems="center">
+                {" "}
+                <ContextMeter
+                  key={(active ?? lastRun)?.id ?? "empty"}
+                  run={active ?? lastRun}
+                  locale={locale}
+                  sameModel={Boolean(
+                    (active ?? lastRun) &&
+                      selectedModel?.id === (active ?? lastRun)?.model &&
+                      selectedModel?.providerId ===
+                        (active ?? lastRun)?.provider_id,
+                  )}
+                  disabled={readOnly || busy || !modelAvailable}
+                  onCompact={
+                    id
+                      ? () => {
+                          void send("/compaction", undefined, undefined, {
+                            preserveDraft: true,
+                          });
+                        }
+                      : undefined
+                  }
+                />
+                {id && (
+                  <ConversationQueuePanel
+                    key={id}
+                    api={api}
+                    id={id}
+                    locale={locale}
+                    readOnly={readOnly}
+                    queue={queue}
+                    submission={queueSubmission}
+                    selection={modelAvailable ? queueSelection : undefined}
+                  />
+                )}
+              </Flex>
+            </Flex>
             <Flex justifyContent="center" paddingBlockStart="spacing-2">
               <Text variant="caption-2" color="secondary">
                 {t("disclaimer")}
@@ -1945,7 +1940,10 @@ export function ChatWorkspace({
                 >
                   <Text variant="caption-2" color="secondary">
                     {" "}
-                    · {lastRun.usage.totalTokens}
+                    · {t("tokens")}:{" "}
+                    {new Intl.NumberFormat(locale).format(
+                      lastRun.usage.totalTokens,
+                    )}
                   </Text>
                 </Tooltip>
               )}

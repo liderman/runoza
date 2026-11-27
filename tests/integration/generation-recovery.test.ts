@@ -25,10 +25,11 @@ const scenarios = [
   "forged",
   "cancel",
   "summary",
+  "long-task",
 ];
 test(
   "durable generation recovery: plain chat, Pi, shared budgets, live cancellation and transcript",
-  { timeout: 120000 },
+  { timeout: 240000 },
   async (t) => {
     const root = new Pool({ connectionString: rootUrl }),
       name = "generation_recovery_" + randomUUID().replaceAll("-", "");
@@ -53,6 +54,7 @@ test(
       if (body.model === "before" && n === 1)
         return reply.code(503).send({ error: { message: "fixture" } });
       const tool =
+        (body.model === "long-task" && n <= 70) ||
         body.model === "tool-limit" ||
         (body.model === "after-tool" && n === 1) ||
         (body.model === "forged" && n === 2);
@@ -83,7 +85,12 @@ test(
                     type: "function",
                     function: {
                       name: "execute",
-                      arguments: JSON.stringify({ command: "verify" }),
+                      arguments: JSON.stringify({
+                        command:
+                          body.model === "long-task"
+                            ? "inspect-step-" + n
+                            : "verify",
+                      }),
                     },
                   },
                 ],
@@ -345,6 +352,18 @@ test(
           );
         }
       });
+      await t.test(
+        "default unlimited run completes 70 distinct tool steps and a final answer",
+        async () => {
+          const run = await setup("long-task", "code", 0);
+          await executeRun(db, key, run.id, runtime);
+          const result = await state(run.id);
+          assert.equal(result.status, "completed", result.error_code ?? "");
+          assert.equal(result.generation_calls, 71);
+          assert.equal(calls.get("long-task"), 71);
+          assert.equal((await attempts(run.id)).length, 71);
+        },
+      );
       await t.test(
         "summaries share durable reservations; reconstruction cannot reset quota or deadline",
         async () => {

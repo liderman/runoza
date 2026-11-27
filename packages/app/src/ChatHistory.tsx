@@ -1,3 +1,4 @@
+import type { RunPlan } from "@runoza/contracts";
 import { memo, useMemo, useRef, useState } from "react";
 import { MessageList, type TChatMessage } from "@gravity-ui/aikit";
 import {
@@ -49,6 +50,10 @@ type Props = {
   onRetry: (parentId?: string) => void;
   onSource: (source: SourceSelection, trigger: HTMLElement) => void;
   onError: () => void;
+  onExecutePlan?: (plan: RunPlan) => Promise<unknown>;
+  planDisabled?: boolean;
+  onContinue?: () => void;
+  onDismissError?: (runId: string) => void;
 };
 /** Keep the entire DOM history mounted; AIKit memoizes unchanged message rows. */
 export const ChatHistory = memo(function ChatHistory({
@@ -66,6 +71,10 @@ export const ChatHistory = memo(function ChatHistory({
   onRetry,
   onSource,
   onError,
+  onExecutePlan,
+  planDisabled,
+  onContinue,
+  onDismissError,
 }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
   const activeRun = snapshot.runs.find(
@@ -388,6 +397,22 @@ export const ChatHistory = memo(function ChatHistory({
               targetLabel={targetLabel}
               ordered={Boolean(original.parts)}
               reasoning={original.reasoning}
+              onDismissError={onDismissError}
+              editablePlan={
+                !readOnly && original.id === snapshot.conversation.head_id
+              }
+              onExecutePlan={
+                original.id === snapshot.conversation.head_id
+                  ? onExecutePlan
+                  : undefined
+              }
+              planDisabled={planDisabled}
+              onContinue={
+                original.id === snapshot.conversation.head_id &&
+                run.error_code === "AGENT_STEP_LIMIT"
+                  ? onContinue
+                  : undefined
+              }
             />
           ) : original.reasoning ? (
             <Disclosure summary={locale === "ru" ? "Рассуждения" : "Reasoning"}>
@@ -397,7 +422,18 @@ export const ChatHistory = memo(function ChatHistory({
         </>
       );
     },
-    [api, locale, targetLabel, onSource],
+    [
+      api,
+      locale,
+      targetLabel,
+      onSource,
+      readOnly,
+      snapshot.conversation.head_id,
+      onExecutePlan,
+      planDisabled,
+      onContinue,
+      onDismissError,
+    ],
   );
   return (
     <ConversationHistory

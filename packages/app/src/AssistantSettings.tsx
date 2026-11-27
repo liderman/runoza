@@ -29,7 +29,7 @@ export function AssistantSettings({
     [draft, setDraft] = useState<Config | null>(null),
     [models, setModels] = useState<Model[]>([]),
     [auto, setAuto] = useState<Model | null>(null),
-    [steps, setSteps] = useState("64"),
+    [steps, setSteps] = useState("0"),
     [parallel, setParallel] = useState("10"),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
@@ -80,12 +80,12 @@ export function AssistantSettings({
     ),
     () => {
       setDraft(saved);
-      setSteps(String(saved?.max_agent_steps ?? 64));
+      setSteps(String(saved?.max_agent_steps ?? 0));
       setParallel(String(saved?.max_parallel_runs ?? 10));
     },
   );
   const invalid =
-    !/^\d+$/.test(steps) || Number(steps) < 1 || Number(steps) > 500;
+    !/^\d+$/.test(steps) || Number(steps) < 0 || Number(steps) > 500;
   const invalidParallel =
     !/^\d+$/.test(parallel) || Number(parallel) < 1 || Number(parallel) > 100;
   if (!draft)
@@ -181,14 +181,14 @@ export function AssistantSettings({
         error={
           invalid
             ? s(
-                "Введите целое число от 1 до 500.",
-                "Enter a whole number from 1 to 500.",
+                "Введите целое число от 0 до 500.",
+                "Enter a whole number from 0 to 500.",
               )
             : undefined
         }
         help={s(
-          "Шаг — одно обращение к модели. По умолчанию 64. На шаг разрешено до четырёх вызовов инструментов в общем бюджете; запуск ограничен одним часом. Больший лимит позволяет решать длинные задачи, но может увеличить расходы.",
-          "A step is one model call. Default: 64. The overall tool budget is four times this limit; runs are limited to one hour. Higher limits allow longer tasks and may increase cost.",
+          "По умолчанию 0 — без ограничения числа шагов. Положительное число задаёт лимит обращений к модели и общий бюджет инструментов в четыре раза больше. Остановка, защита от зацикливания и часовой срок выполнения сохраняются. Длинные задачи могут стоить дороже.",
+          "Default: 0 — no step ceiling. A positive value limits model calls and sets a tool budget four times larger. Stop, loop protection and the one-hour execution deadline remain. Longer tasks may cost more.",
         )}
       />
       <NumericField

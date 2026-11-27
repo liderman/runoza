@@ -269,12 +269,15 @@ test("lost ACK is reconciled by request key; a missing ACK retries the same immu
   await user.type(screen.getByRole("textbox", { name: "Draft" }), "Original");
   await user.click(screen.getByRole("button", { name: "Add next" }));
   await screen.findByText(/Receipt is uncertain/);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   await user.clear(screen.getByRole("textbox", { name: "Draft" }));
   await user.type(
     screen.getByRole("textbox", { name: "Draft" }),
     "Later draft",
   );
   accepted = true;
+  await user.click(screen.getByRole("button", { name: "Next requests: 0" }));
   await user.click(
     screen.getByRole("button", { name: "Retry same submission" }),
   );

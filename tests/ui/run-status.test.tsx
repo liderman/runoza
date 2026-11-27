@@ -19,6 +19,7 @@ import {
 import { ActionVerification } from "../../packages/app/src/ActionVerification";
 import {
   actionAnchor,
+  jumpToRun,
   runDuration,
   runPresentation,
 } from "../../packages/app/src/run-presentation";
@@ -146,15 +147,9 @@ test("fresh approvals take priority over an earlier unknown result and advance t
     ),
   );
   const user = userEvent.setup();
-  await user.click(
-    strip.getByRole("button", { name: "Reviewer checking action" }),
-  );
-  expect(strip.getByText(/An action result is unconfirmed/)).toBeTruthy();
   const diagnosticAnchor = document.getElementById(actionAnchor("diagnostic"))!;
   diagnosticAnchor.scrollIntoView = vi.fn();
-  await user.click(
-    strip.getByRole("button", { name: "Go to action in history" }),
-  );
+  await user.click(strip.getByRole("button", { name: /Show in history/ }));
   await waitFor(() => expect(document.activeElement).toBe(diagnosticAnchor));
   await user.click(screen.getByRole("button", { name: "Review myself" }));
   await user.click(screen.getByRole("combobox", { name: "Approval scope" }));
@@ -177,14 +172,14 @@ test("fresh approvals take priority over an earlier unknown result and advance t
   await waitFor(() =>
     expect(strip.getByRole("status").textContent).toBe("Awaiting approval"),
   );
-  expect(strip.getByText(/An action result is unconfirmed/)).toBeTruthy();
+  expect(
+    strip.getByRole("button", { name: "Go to unconfirmed result" }),
+  ).toBeTruthy();
   // A fresh action never inherits the previous action's broader approval scope.
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
   const nextAnchor = document.getElementById(actionAnchor("next"))!;
   nextAnchor.scrollIntoView = vi.fn();
-  await user.click(
-    strip.getByRole("button", { name: "Go to action in history" }),
-  );
+  await user.click(strip.getByRole("button", { name: /Show in history/ }));
   await waitFor(() => expect(document.activeElement).toBe(nextAnchor));
   const oldAnchor = document.getElementById(actionAnchor("old"))!;
   oldAnchor.scrollIntoView = vi.fn();
@@ -226,21 +221,16 @@ for (const theme of ["light", "dark"] as const)
       const label = locale === "ru" ? "Ждёт разрешения" : "Awaiting approval";
       await waitFor(() => expect(live.textContent).toBe(label));
       expect(calls).toBe(1);
-      const trigger = screen.getByRole("button", { name: label });
+      const trigger = screen.getByRole("button", {
+        name:
+          label +
+          (locale === "ru" ? " · Показать в истории" : " · Show in history"),
+      });
+      const anchor = document.getElementById(actionAnchor(action.id))!;
+      anchor.scrollIntoView = scroll;
       trigger.focus();
       const user = userEvent.setup();
       await user.keyboard("{Enter}");
-      expect(screen.getByText(/Workspace fixture/)).toBeTruthy();
-      const anchor = document.getElementById(actionAnchor(action.id))!;
-      anchor.scrollIntoView = scroll;
-      await user.click(
-        screen.getByRole("button", {
-          name:
-            locale === "ru"
-              ? "К действию в истории"
-              : "Go to action in history",
-        }),
-      );
       await waitFor(() => expect(document.activeElement).toBe(anchor));
       expect(scroll).toHaveBeenCalledTimes(1);
       // The live region contains state only; the history timer is outside it.
@@ -442,16 +432,8 @@ test("jump reveals a collapsed legacy run before focusing its action", async () 
   const anchor = document.getElementById(actionAnchor(action.id))!;
   anchor.scrollIntoView = vi.fn();
   const user = userEvent.setup();
-  await user.click(
-    within(screen.getByRole("region", { name: "Current work" })).getByRole(
-      "button",
-      { name: "Completed" },
-    ),
-  );
-  expect(screen.queryByText(/Newly selected folder/)).toBeNull();
-  await user.click(
-    screen.getByRole("button", { name: "Go to action in history" }),
-  );
+  expect(screen.queryByRole("region", { name: "Current work" })).toBeNull();
+  act(() => jumpToRun(completed.id, action.id));
   await waitFor(() =>
     expect(summary.getAttribute("aria-expanded")).toBe("true"),
   );
