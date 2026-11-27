@@ -777,11 +777,14 @@ test(
               storage,
               id,
               new AbortController().signal,
-              300,
+              // Leave room for the real database preflight on slower hosts.
+              // This case must time out during a dispatched write, not before it.
+              5000,
             ),
           );
           const op = await done(f.run, id);
           assert.equal(op.error_code, "ROLLBACK_APPLY_TIMEOUT");
+          assert.equal(writes.length, 1);
           assert.equal(op.items[0].status, "unknown");
           const count = writes.length;
           await runRollbackApply(
